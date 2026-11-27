@@ -136,7 +136,7 @@ GMS_MODEL=gpt-6-luna
 GMS_RESPONSES_URL=https://gms.ssafy.io/gmsapi/api.openai.com/v1/responses
 ```
 
-The default engine calls the **GMS Responses API directly**. With `MODEL_PROVIDER=gms`, it does not invoke Claude CLI or fall back to another engine after a failure. The runner will not start without `GMS_KEY`. Codex CLI and Claude Code CLI are optional engines; see the [connection guide](docs/connections.md) for authentication.
+Existing installations with `GMS_KEY` default to the **GMS Responses API**. New installations start with the model unconfigured. OpenAI Responses, Codex CLI and Claude Code CLI are also available. See the [connection guide](docs/connections.md) for credentials and the public sample check.
 
 ### 2. Start the services
 

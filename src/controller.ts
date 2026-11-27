@@ -125,7 +125,7 @@ export class Controller {
     const { snap, previous, requireAnswers } = context;
     const superseded = error instanceof Superseded || (error instanceof HttpError && error.status === 410);
     if (superseded) await this.store.supersede(job.id, job.owner);
-    else if (snap && job.state !== 'publishing' && (job.attempts >= 3 || ['rate_limit', 'authentication'].includes(failureInfo(error).code))) {
+    else if (snap && job.state !== 'publishing' && (job.attempts >= 3 || ['rate_limit', 'authentication', 'unconfigured', 'configuration'].includes(failureInfo(error).code))) {
       const failure = recoveryAttempts(job.body, snap) < 3 ? scheduleFailure(failureInfo(error)) : failureInfo(error);
       const failed = { ...emptyReport(snap, 'failed', failureMessage(failure)), failure, requireAnswers: requireAnswers ?? previous?.requireAnswers, findings: archivedFindings(previous ?? null) };
       try { await this.store.saveResult(job.id, job.owner, failed, {}, 0, null, orchestrated); } catch { await this.store.fail(job, 'Review failed after lease loss'); }

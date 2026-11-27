@@ -136,7 +136,7 @@ GMS_MODEL=gpt-6-luna
 GMS_RESPONSES_URL=https://gms.ssafy.io/gmsapi/api.openai.com/v1/responses
 ```
 
-기본 엔진은 **GMS Responses API 직접 호출**입니다. `MODEL_PROVIDER=gms`일 때 Claude CLI를 호출하지 않으며, 오류가 나도 다른 엔진으로 자동 전환하지 않습니다. `GMS_KEY`가 없으면 실행기가 시작하지 않습니다. 선택적으로 Codex CLI·Claude Code CLI를 사용할 수 있으며, 인증 방법은 [연결 가이드](docs/connections.md)에 있습니다.
+`GMS_KEY`가 있는 기존 설치는 기본으로 **GMS Responses API**에 직접 연결합니다. 새 설치는 모델 미설정 상태로 시작합니다. OpenAI Responses, Codex CLI, Claude Code CLI도 선택할 수 있습니다. 키 설정과 공개 샘플 검사 방법은 [연결 가이드](docs/connections.md)에 있습니다.
 
 ### 2. 서비스 실행
 

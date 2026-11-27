@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { promisify } from 'node:util';
 import { once } from 'node:events';
 import { createServer } from 'node:net';
 import { createServer as createHttpServer } from 'node:http';
@@ -141,7 +142,8 @@ test('controller-to-runner HTTP uses the blind gate for Luna and leaves Sol on o
   t.after(() => gateway.close());
   const ctx = { files: { [path]: source }, diff: { [path]: { oldPath: path, patch: '@@ -2 +2 @@\n+  charge();', lines: new Set([2]) } }, excluded: [], limited: false, sourceDir };
   for (const name of ['gpt-6-luna', 'gpt-6.1-sol']) {
-    const { url, token } = await startRunner(t, { MODEL_PROVIDER: 'gms', DATA_ROOT: root, GMS_MODEL: name, GMS_KEY: 'fixture-only', GMS_RESPONSES_URL: `http://127.0.0.1:${gateway.address().port}/responses` });
+    const selection = name === 'gpt-6-luna' ? {} : { MODEL_PROVIDER: 'gms', GMS_MODEL: name };
+    const { url, token } = await startRunner(t, { ...selection, DATA_ROOT: root, GMS_KEY: 'fixture-only', GMS_RESPONSES_URL: `http://127.0.0.1:${gateway.address().port}/responses` });
     const result = await generateQuestions(new HttpModel(url, token), id, snapshot(), readPolicy(), ctx, null, [], [], 'full', 5000);
     assert.deepEqual(result.questions, name === 'gpt-6-luna' ? [replacement, drafts[1]] : drafts);
   }
@@ -152,5 +154,110 @@ test('controller-to-runner HTTP uses the blind gate for Luna and leaves Sol on o
   for (const { input } of [calls[1], calls[3]]) {
     assert.equal(input.length, 1, 'solver starts without writer history');
     assert.doesNotMatch(input[0].content, /정답은 B입니다|보기 해설/);
+  }
+});
+
+test('OpenAI connection checks public sample tools and generates questions through the normal runner', { timeout: 15000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'hey-openai-http-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const id = '88888888-8888-4888-8888-888888888888', sourceDir = join(root, 'jobs', id, 'source');
+  const path = 'src/pay.ts', source = 'function pay() {\n  charge();\n}';
+  await mkdir(join(sourceDir, 'src'), { recursive: true });
+  await writeFile(join(sourceDir, path), source);
+  const drafts = questions(2), requests = [];
+  let skipSampleRead = false;
+  const gateway = createHttpServer(async (req, res) => {
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    const body = JSON.parse(raw), phase = body.text.format.name;
+    requests.push({ authorization: req.headers.authorization, url: req.url, body });
+    const isCheck = phase === 'answer', file = isCheck ? 'sample.ts' : path;
+    const toolResult = body.input.find(item => item.type === 'function_call_output');
+    const result = isCheck
+      ? { premise: null, answer: '17', why: null, evidence: [{ path: file, line: 1, side: 'RIGHT', reason: 'Declared value' }], unverified: null }
+      : { questions: drafts };
+    const output = toolResult || (isCheck && skipSampleRead)
+      ? [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(result) }] }]
+      : [{ type: 'function_call', name: 'read_file', call_id: 'read-1', arguments: JSON.stringify({ path: file }) }];
+    res.end(JSON.stringify({ status: 'completed', output }));
+  });
+  await new Promise(resolve => gateway.listen(0, '127.0.0.1', resolve));
+  t.after(() => gateway.close());
+  const env = {
+    MODEL_PROVIDER: 'openai', OPENAI_MODEL: 'fixture-responses-model', OPENAI_API_KEY: 'openai-fixture-only',
+    OPENAI_RESPONSES_URL: `http://127.0.0.1:${gateway.address().port}/v1/responses`, DATA_ROOT: root,
+    GMS_KEY: 'inactive-gms-key',
+  };
+  const checkModel = () => promisify(execFile)(process.execPath, [new URL('../dist/runner-server.js', import.meta.url).pathname, '--check-model'], {
+    env: { PATH: process.env.PATH, ...env }, timeout: 5000,
+  });
+  const { stdout } = await checkModel();
+  assert.deepEqual(JSON.parse(stdout), { ok: true, provider: 'openai', model: 'fixture-responses-model' });
+  assert.equal(requests.length, 2);
+  assert.doesNotMatch(JSON.stringify(requests), /src\/pay.ts|charge\(\)|inactive-gms-key/);
+  assert.match(requests[1].body.input.at(-1).output, /defaultPageSize = 17/);
+
+  const { url, token } = await startRunner(t, env);
+  const ctx = { files: { [path]: source }, diff: { [path]: { oldPath: path, patch: '@@ -2 +2 @@\n+  charge();', lines: new Set([2]) } }, excluded: [], limited: false, sourceDir };
+  const result = await generateQuestions(new HttpModel(url, token), id, snapshot(), readPolicy(), ctx, null, [], [], 'full', 5000);
+  assert.deepEqual(result.questions, drafts);
+  assert.equal(requests.length, 4);
+  for (const { authorization, url, body } of requests) {
+    assert.equal(authorization, 'Bearer openai-fixture-only');
+    assert.equal(url, '/v1/responses');
+    assert.equal(body.model, 'fixture-responses-model');
+    assert.equal(body.store, false);
+    assert.deepEqual(body.include, ['reasoning.encrypted_content']);
+    assert.ok(body.tools.some(tool => tool.name === 'read_file'));
+    assert.equal(body.text.format.type, 'json_schema');
+  }
+  assert.match(requests[3].body.input.at(-1).output, /charge\(\)/);
+  skipSampleRead = true;
+  await assert.rejects(checkModel, error => {
+    assert.equal(error.code, 1);
+    assert.deepEqual(JSON.parse(error.stderr), { ok: false, failure: { code: 'invalid_output', provider: 'openai' } });
+    return true;
+  });
+  assert.equal(requests.length, 5);
+});
+
+test('runner stays healthy with absent or invalid model configuration and reports distinct execution failures', async t => {
+  for (const { env, modelStatus, failure } of [
+    { env: {}, modelStatus: 'unconfigured', failure: { code: 'unconfigured' } },
+    { env: { MODEL_PROVIDER: 'gms' }, modelStatus: 'invalid', failure: { code: 'configuration', provider: 'gms' } },
+    { env: { MODEL_PROVIDER: 'openai', OPENAI_API_KEY: 'fixture' }, modelStatus: 'invalid', failure: { code: 'configuration', provider: 'openai' } },
+  ]) {
+    const { url, token } = await startRunner(t, env);
+    assert.deepEqual(await (await fetch(`${url}/healthz`)).json(), { ok: true, busy: false, modelStatus });
+    await assert.rejects(() => new HttpModel(url, token).run('initial_questions', 'fixture', '88888888-8888-4888-8888-888888888888', 5000),
+      error => { assert.deepEqual(error.failure, failure); return true; });
+  }
+});
+
+test('runner keeps legacy CLI model selection, login directories and credential variables', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'hey-cli-config-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const id = '88888888-8888-4888-8888-888888888888';
+  await mkdir(join(root, 'jobs', id, 'source'), { recursive: true });
+  const value = { questions: questions(2) };
+  for (const provider of ['codex', 'claude']) {
+    const prefix = provider.toUpperCase();
+    const home = join(root, provider), binary = join(root, `fake-${provider}`), model = `${provider}-fixture-model`;
+    const codex = provider === 'codex';
+    const homeKey = codex ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR', tokenKey = codex ? 'CODEX_API_KEY' : 'CLAUDE_CODE_OAUTH_TOKEN';
+    await writeFile(binary, `#!/usr/bin/env node
+import fs from 'node:fs';
+const args = process.argv.slice(2), at = name => args[args.indexOf(name) + 1];
+if (at('--model') !== ${JSON.stringify(model)} || process.env.${homeKey} !== ${JSON.stringify(home)} || process.env.${tokenKey} !== 'legacy-cli-fixture') process.exit(42);
+const value = ${JSON.stringify(value)};
+if (${codex}) fs.writeFileSync(at('-o'), JSON.stringify(value));
+else console.log(JSON.stringify({ type: 'result', subtype: 'success', structured_output: value }));
+`, { mode: 0o755 });
+    const { url, token } = await startRunner(t, {
+      MODEL_PROVIDER: provider, DATA_ROOT: root, [homeKey]: home, [tokenKey]: 'legacy-cli-fixture',
+      [`${prefix}_MODEL`]: model, [`${prefix}_BINARY`]: binary,
+    });
+    const result = await new HttpModel(url, token).initialQuestions('fixture', id, 5000);
+    assert.deepEqual(result, { output: value, verify: false });
   }
 });
