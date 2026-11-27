@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { z } from 'zod';
 import { phaseSchemas } from './codex.js';
-import { checkModelConnection, createModel, readModelConnection } from './model-connection.js';
+import { checkModelConnection, createModel, listConnectionModels, readModelCatalog, readModelConnection } from './model-connection.js';
 import { readBody, send } from './application.js';
 import { equal } from './webhooks.js';
 import { failureInfo, ModelFailure } from './model-failure.js';
@@ -9,7 +9,18 @@ import { INITIAL_QUESTION_CHECK_HEADER } from './review.js';
 
 const config = readModelConnection(process.env);
 const { provider } = config;
-if (process.argv[2] === '--check-model') {
+const option = process.argv[2];
+if (option === '--list-models') {
+  const catalog = readModelCatalog(process.env);
+  try {
+    if ('field' in catalog) throw new ModelFailure({ code: 'configuration', provider });
+    const models = await listConnectionModels(catalog);
+    console.log(JSON.stringify({ ok: true, provider: catalog.provider, models }));
+  } catch (error) {
+    console.error(JSON.stringify({ ok: false, failure: failureInfo(error, provider), ...('field' in catalog ? { field: catalog.field } : {}) }));
+    process.exitCode = 1;
+  }
+} else if (option === '--check-model') {
   try {
     if (config.status !== 'configured') throw new ModelFailure({ code: config.status === 'invalid' ? 'configuration' : 'unconfigured', provider });
     await checkModelConnection(config.connection);

@@ -5,13 +5,13 @@ import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { phaseSchemas, workspaceSource } from './codex.js';
 import { optionIds } from './contracts.js';
-import { RepositoryReader } from './source-reader.js';
+import { SnapshotTools, snapshotToolDefinitions } from './model-source-tools.js';
+import { modelApiJson, providerFailure } from './model-api.js';
 import { redact } from './redact.js';
 import { ModelFailure } from './model-failure.js';
 import type { Model, ModelPhase } from './review.js';
 
-const readArgs = z.strictObject({ path: z.string(), start: z.int().min(1).default(1), limit: z.int().min(1).max(500).default(200) });
-const toolSchemas = { list_files: z.strictObject({}), read_file: readArgs, read_base_file: readArgs, search_text: z.strictObject({ term: z.string().min(1).max(200) }) };
+const tools = snapshotToolDefinitions.map(tool => ({ type: 'function', ...tool, strict: false }));
 const Output = z.object({ status: z.string(), output: z.array(z.object({ type: z.string() }).passthrough()) });
 const repairableBatch = z.looseObject({ questions: z.array(z.looseObject({
   options: z.array(z.looseObject({ text: z.string() })),
@@ -89,17 +89,12 @@ export class ResponsesModel implements Model {
     const usage = (entry: Record<string, unknown>) => {
       if (provider === 'gms') recordUsage(url, entry, this.check);
     };
-    const source = await workspaceSource(this.root, id), reader = new RepositoryReader(source), base = new RepositoryReader(join(dirname(source), 'base'));
+    const source = await workspaceSource(this.root, id), snapshotTools = new SnapshotTools(source);
     const signal = AbortSignal.timeout(timeoutMs);
     const input: unknown[] = [{ role: 'user', content: redact(prompt) }];
     const schema = phaseSchemas[phase];
     const { $schema: _, ...jsonSchema } = z.toJSONSchema(schema, { unrepresentable: 'any' });
-    const tools = Object.entries(toolSchemas).map(([name, args]) => {
-      const { $schema: _, ...parameters } = z.toJSONSchema(args);
-      return { type: 'function', name, description: `Read-only snapshot tool: ${name}`, parameters, strict: false };
-    });
     const run = randomUUID(); let requests = 0, toolCalls = 0, outcome = 'completed';
-    let readSource = false;
     const cache = provider === 'gms' && !this.check ? cacheDir(url) : '';
     const entry = cache ? join(cache, createHash('sha256').update(JSON.stringify([model, phase, instructions, prompt, await snapshotDigest([source, join(dirname(source), 'base')])])).digest('hex') + '.json') : '';
     if (entry && process.env.GMS_CACHE !== 'refresh') {
@@ -113,27 +108,18 @@ export class ResponsesModel implements Model {
         signal.throwIfAborted();
         const last = round === MAX_ROUNDS - 1;
         requests++; usage({ event: 'request', run, phase, round: round + 1 });
-        const response = await fetch(url, { method: 'POST', redirect: 'error', signal,
+        const response = await modelApiJson(url, { method: 'POST', signal,
           headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
           body: JSON.stringify({ model, store: false, instructions, input, tools, parallel_tool_calls: true, ...(last ? { tool_choice: 'none' } : {}),
             ...(provider === 'openai' ? { include: ['reasoning.encrypted_content'] } : {}),
             text: { format: { type: 'json_schema', name: phase, schema: jsonSchema, strict: false } } }),
-        });
-        if (!response.ok) {
-          await response.body?.cancel();
-          const apiStatus = response.status;
-          throw new ModelFailure({ provider, apiStatus, code: apiStatus === 429 ? 'rate_limit' : [401, 403].includes(apiStatus) ? 'authentication' : apiStatus >= 500 ? 'unavailable' : 'unknown' });
-        }
-        // Bound gateway output before parsing or retaining conversation history.
-        const chunks: Uint8Array[] = []; let size = 0;
-        if (!response.body) throw new ModelFailure({ provider, code: 'invalid_output' });
-        for await (const chunk of response.body) { size += chunk.length; if (size > 2 * 1024 * 1024) throw new ModelFailure({ provider, code: 'invalid_output' }); chunks.push(chunk); }
-        const result = Output.parse(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+        }, provider);
+        const result = Output.parse(response);
         if (result.status !== 'completed') throw new ModelFailure({ provider, code: 'invalid_output' });
         input.push(...result.output);
         const calls = result.output.filter(item => item.type === 'function_call');
         if (!calls.length) {
-          if (this.check && !readSource) throw new ModelFailure({ provider, code: 'invalid_output' });
+          if (this.check && !snapshotTools.readSource) throw new ModelFailure({ provider, code: 'invalid_output' });
           const messages = z.array(z.object({ type: z.string(), content: z.array(z.object({ type: z.string(), text: z.string().optional() })).optional() })).parse(result.output);
           const text = messages.flatMap(m => m.content ?? []).filter(c => c.type === 'output_text').map(c => c.text ?? '').join('');
           if (Buffer.byteLength(text) > 512000) throw new ModelFailure({ provider, code: 'invalid_output' });
@@ -147,28 +133,15 @@ export class ResponsesModel implements Model {
         for (const raw of calls) {
           const call = z.object({ name: z.string(), call_id: z.string(), arguments: z.string() }).parse(raw);
           let output: unknown;
-          try {
-            const args = JSON.parse(call.arguments);
-            switch (call.name) {
-              case 'list_files': toolSchemas.list_files.parse(args); output = await reader.list(); break;
-              case 'read_file': case 'read_base_file': {
-                const a = readArgs.parse(args);
-                const file = await (call.name === 'read_file' ? reader : base).read(a.path, a.start, a.limit);
-                if (call.name === 'read_file' && file.lines.length) readSource = true;
-                output = file;
-                break;
-              }
-              case 'search_text': output = await reader.search(toolSchemas.search_text.parse(args).term); break;
-              default: throw new Error('Unknown tool');
-            }
-          } catch { output = { error: 'Source request refused or unavailable' }; }
+          try { output = await snapshotTools.run(call.name, JSON.parse(call.arguments)); }
+          catch { output = { error: 'Source request refused or unavailable' }; }
           input.push({ type: 'function_call_output', call_id: call.call_id, output: JSON.stringify(output) });
         }
         if (Buffer.byteLength(JSON.stringify(input)) > 8 * 1024 * 1024) throw new ModelFailure({ provider, code: 'invalid_output' });
       }
       throw new ModelFailure({ provider, code: 'invalid_output' });
     } catch (error) {
-      const failure = error instanceof ModelFailure ? error : new ModelFailure({ provider, code: signal.aborted ? 'timeout' : error instanceof z.ZodError || error instanceof SyntaxError ? 'invalid_output' : 'unavailable' });
+      const failure = providerFailure(error, signal, provider);
       outcome = failure.failure.code;
       throw failure;
     } finally {

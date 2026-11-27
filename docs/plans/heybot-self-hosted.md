@@ -32,6 +32,7 @@
 | 작업 | 구현과 로컬 검증 | 남은 검증 |
 |---|---|---|
 | MODEL-01 | 구현 완료. 공개 샘플 CLI 및 Controller → Runner HTTP fixture 통과. 기존 Luna 독립 풀이·재출제, Sol 단일 생성, Codex·Claude CLI 환경 변수 확인. 단위 210개, 격리 PostgreSQL 71개, n8n 실행 `455a729f`, Compose 구성 검사 통과. | 공식 코드 검토와 실제 OpenAI·GMS·CLI 계정 연결 확인 대기. |
+| MODEL-02 | 구현 완료. Claude API 모델 목록 페이지 순회, 선택 모델 조회와 샘플 검사, 읽기 도구와 구조화 응답, 잘못된 키와 429의 재시각을 HTTP fixture로 확인. 기존 Claude Code 회귀 포함 단위 211개 및 Compose 구성 검사 통과. | 공식 코드 검토와 실제 Claude API 키·모델 확인 대기. |
 
 ## 검증 경계
 

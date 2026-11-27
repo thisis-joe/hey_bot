@@ -261,3 +261,100 @@ else console.log(JSON.stringify({ type: 'result', subtype: 'success', structured
     assert.deepEqual(result, { output: value, verify: false });
   }
 });
+
+test('Claude API lists models for its key and uses the chosen ID through the runner', { timeout: 15000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'hey-claude-api-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const id = '88888888-8888-4888-8888-888888888888', source = join(root, 'jobs', id, 'source');
+  await mkdir(join(source, 'src'), { recursive: true });
+  await writeFile(join(source, 'src/pay.ts'), 'function pay() {\n  charge();\n}');
+  const drafts = questions(2), requests = [];
+  let rateLimited = false, invalidDrafts = false;
+  const gateway = createHttpServer(async (req, res) => {
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    const url = new URL(req.url, 'http://fixture'), body = raw ? JSON.parse(raw) : undefined;
+    requests.push({ method: req.method, url, headers: req.headers, body });
+    res.setHeader('content-type', 'application/json');
+    if (req.headers['x-api-key'] !== 'anthropic-fixture-only') {
+      res.statusCode = 401; res.end('{"error":{"message":"provider-private-auth-detail"}}'); return;
+    }
+    if (req.method === 'GET') {
+      const after = url.searchParams.get('after_id');
+      const model = after ? { id: 'claude-fixture-20261127', display_name: 'Fixture Two' } : { id: 'claude-fixture-20261021', display_name: 'Fixture One' };
+      res.end(JSON.stringify({ data: [model], has_more: !after, last_id: model.id })); return;
+    }
+    if (rateLimited) {
+      res.statusCode = 429; res.setHeader('retry-after', '19'); res.end('{"error":{"message":"provider-private-quota-detail"}}'); return;
+    }
+    const prompt = body.messages[0].content, isCheck = /^Use the snapshot read tool/.test(prompt);
+    const toolResult = body.messages.length > 1;
+    const result = isCheck
+      ? { premise: null, answer: '17', why: null, evidence: [{ path: 'sample.ts', line: 1, side: 'RIGHT', reason: 'Declared value' }], unverified: null }
+      : { questions: invalidDrafts ? drafts.slice(0, 1) : drafts };
+    res.end(JSON.stringify(toolResult
+      ? { stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(result) }] }
+      : { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'toolu_1', name: 'read_file', input: { path: isCheck ? 'sample.ts' : 'src/pay.ts' } }] }));
+  });
+  await new Promise(resolve => gateway.listen(0, '127.0.0.1', resolve));
+  t.after(() => gateway.close());
+  const env = {
+    MODEL_PROVIDER: 'claude-api', ANTHROPIC_API_KEY: 'anthropic-fixture-only', CLAUDE_API_BASE_URL: `http://127.0.0.1:${gateway.address().port}`,
+    DATA_ROOT: root, CLAUDE_CODE_OAUTH_TOKEN: 'inactive-cli-credential',
+  };
+  const cli = (arg, settings = {}) => promisify(execFile)(process.execPath, [new URL('../dist/runner-server.js', import.meta.url).pathname, arg], {
+    env: { PATH: process.env.PATH, ...env, ...settings }, timeout: 5000,
+  });
+  const { stdout } = await cli('--list-models');
+  assert.deepEqual(JSON.parse(stdout), { ok: true, provider: 'claude-api', models: [
+    { id: 'claude-fixture-20261021', name: 'Fixture One' },
+    { id: 'claude-fixture-20261127', name: 'Fixture Two' },
+  ] });
+  assert.equal(requests[1].url.searchParams.get('after_id'), 'claude-fixture-20261021');
+  assert.ok(requests.slice(0, 2).every(r => r.url.pathname === '/v1/models' && r.method === 'GET'));
+
+  const selected = { CLAUDE_MODEL: 'claude-fixture-20261127' };
+  const check = await cli('--check-model', selected);
+  assert.deepEqual(JSON.parse(check.stdout), { ok: true, provider: 'claude-api', model: selected.CLAUDE_MODEL });
+  assert.match(requests[3].body.messages.at(-1).content[0].content, /defaultPageSize = 17/);
+  assert.doesNotMatch(JSON.stringify(requests.slice(2, 4)), /src\/pay.ts|charge\(\)/);
+
+  const { url, token } = await startRunner(t, { ...env, ...selected });
+  const model = new HttpModel(url, token);
+  assert.deepEqual(await model.initialQuestions('Create two questions.', id, 5000), { output: { questions: drafts }, verify: false });
+  const called = requests.slice(2, 6);
+  for (const { method, url, headers, body } of called) {
+    assert.equal(method, 'POST'); assert.equal(url.pathname, '/v1/messages');
+    assert.equal(headers['x-api-key'], env.ANTHROPIC_API_KEY);
+    assert.ok(headers['anthropic-version']); assert.equal(headers.authorization, undefined);
+    assert.equal(body.model, selected.CLAUDE_MODEL);
+    assert.equal(body.output_config.format.type, 'json_schema');
+    assert.ok(body.tools.some(tool => tool.name === 'read_file'));
+  }
+  const finalMessage = requests[5].body.messages.at(-1);
+  assert.equal(finalMessage.role, 'user');
+  assert.equal(finalMessage.content[0].tool_use_id, 'toolu_1');
+  assert.match(finalMessage.content[0].content, /charge\(\)/);
+  assert.equal(requests[5].body.output_config.format.schema.properties.questions.maxItems, undefined);
+  assert.doesNotMatch(JSON.stringify(requests), /inactive-cli-credential/);
+
+  invalidDrafts = true;
+  await assert.rejects(() => model.run('initial_questions', 'Create two questions.', id, 5000), error => error.failure?.code === 'invalid_output');
+  rateLimited = true;
+  await assert.rejects(() => model.run('initial_questions', 'Create two questions.', id, 5000), error => {
+    assert.equal(error.failure?.code, 'rate_limit'); assert.equal(error.failure.apiStatus, 429);
+    const wait = Date.parse(error.failure.retryAt) - Date.now();
+    assert.ok(wait > 16000 && wait <= 19000, `Unexpected retry delay ${wait}`);
+    assert.doesNotMatch(String(error), /provider-private/);
+    return true;
+  });
+  await assert.rejects(() => cli('--list-models', { ANTHROPIC_API_KEY: 'wrong-fixture-key' }), error => {
+    assert.deepEqual(JSON.parse(error.stderr), { ok: false, failure: { code: 'authentication', provider: 'claude-api', apiStatus: 401 } });
+    return true;
+  });
+  const wrong = await startRunner(t, { ...env, ...selected, ANTHROPIC_API_KEY: 'wrong-fixture-key' });
+  await assert.rejects(() => new HttpModel(wrong.url, wrong.token).run('initial_questions', 'fixture', id, 5000), error => {
+    assert.deepEqual(error.failure, { code: 'authentication', provider: 'claude-api', apiStatus: 401 });
+    return true;
+  });
+});

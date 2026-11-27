@@ -5,7 +5,7 @@
 
 ## 1. 질문 생성 엔진 선택과 로그인
 
-`.env`의 `MODEL_PROVIDER`에 `gms`, `openai`, `codex`, `claude` 중 하나를 지정한다. 공급자를 비워 두면 `GMS_KEY`가 있는 설치는 기존 GMS 경로를 사용한다.
+`.env`의 `MODEL_PROVIDER`에 `gms`, `openai`, `claude-api`, `codex`, `claude` 중 하나를 지정한다. 공급자를 비워 두면 `GMS_KEY`가 있는 설치는 기존 GMS 경로를 사용한다.
 새 설치는 모델 미설정 상태로 시작한다. 실행기 로그와 `/healthz`의 `modelStatus`에서 미설정(`unconfigured`), 설정 오류(`invalid`), 구성 로드 완료(`configured`)를 구분한다.
 값을 바꾼 뒤 `docker compose up -d --force-recreate runner`로 다시 읽는다. 실행기 로그의 `provider`로 적용 여부를 확인한다.
 
@@ -44,11 +44,22 @@ docker compose exec runner claude auth login
 docker compose exec runner claude auth status
 ```
 
+### Claude Messages API 직접 호출
+
+`.env`에 `MODEL_PROVIDER=claude-api`와 `ANTHROPIC_API_KEY`를 설정하고 아래 명령으로 키에 허용된 모델 ID를 조회한다. Claude API 구독과 청구는 Claude Code 계정 로그인과 별개다.
+
+```sh
+docker compose build runner &&
+  docker compose run --rm --no-deps runner node dist/runner-server.js --list-models
+```
+
+출력의 모델 ID를 `CLAUDE_MODEL`에 지정한다. 아래 공개 샘플 검사 절차를 거쳐 파일 읽기와 구조화 출력을 지원하는지 확인한다. Messages 호출에는 API 키를 사용한다.
+
 ### OpenAI Responses API 직접 호출
 
 `.env`에 `MODEL_PROVIDER=openai`, `OPENAI_API_KEY`, `OPENAI_MODEL`을 지정한다. 모델 ID는 API 키에 허용된 것을 입력한다. Responses 호환 게이트웨이의 경우 `OPENAI_RESPONSES_URL`에 `/v1/responses`를 포함한 전체 HTTPS 주소를 지정하고 그 게이트웨이가 발급한 키를 쓴다.
 
-OpenAI와 GMS는 실행기를 재시작하기 전에 아래 명령으로 새 설정을 시험할 수 있다. 일회용 컨테이너가 고정 공개 샘플의 파일 읽기와 구조화 응답을 확인한다. 이 명령은 실제 모델 요청을 보내므로 제공자의 과금 정책이 적용된다.
+OpenAI, GMS, Claude Messages는 실행기를 재시작하기 전에 아래 명령으로 새 설정을 시험할 수 있다. 일회용 컨테이너가 고정 공개 샘플의 파일 읽기와 구조화 응답을 확인한다. 이 명령은 실제 모델 요청을 보내므로 제공자의 과금 정책이 적용된다.
 
 ```sh
 docker compose build runner &&
