@@ -34,6 +34,7 @@
 | MODEL-01 | 구현 완료. 공개 샘플 CLI 및 Controller → Runner HTTP fixture 통과. 기존 Luna 독립 풀이·재출제, Sol 단일 생성, Codex·Claude CLI 환경 변수 확인. 단위 210개, 격리 PostgreSQL 71개, n8n 실행 `455a729f`, Compose 구성 검사 통과. | 공식 코드 검토와 실제 OpenAI·GMS·CLI 계정 연결 확인 대기. |
 | MODEL-02 | 구현 완료. Claude API 모델 목록 페이지 순회, 선택 모델 조회와 샘플 검사, 읽기 도구와 구조화 응답, 잘못된 키와 429의 재시각을 HTTP fixture로 확인. 기존 Claude Code 회귀 포함 단위 211개 및 Compose 구성 검사 통과. | 공식 코드 검토와 실제 Claude API 키·모델 확인 대기. |
 | MODEL-03 | 팀 내부 Ollama 연결 구현. 로컬 모델 목록, 공개 샘플, Runner의 질문·답변·저장된 해설, 원격 태그 변경 시 모델 요청 차단을 HTTP fixture로 확인. 단위 212개 및 Compose 구성 검사 통과. | 공식 코드 검토, 실제 Qwen3 4B 오프라인 실행, 공개 평가 PR에서 생성 시간·메모리·정답 정확도 확인 대기. |
+| ACCOUNT-01 | 문서 조사 완료. 기존 Codex CLI와 공식 OAuth의 모델 조회·갱신·해제 및 VM 귀속 경계를 [계정 조사](../verification/heybot-accounts.md)에 기록. | Free·Plus·Pro 및 Enterprise 계정, 팀원 명령, 무인 머지의 실제 검증 대기. |
 
 ## 검증 경계
 
