@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import type { ChangeQuestion, Snapshot } from './contracts.js';
 
-export function sameRevision(a: Snapshot, b: Snapshot): boolean {
+type Revision = Pick<Snapshot, 'headSha' | 'baseSha' | 'startSha'>;
+export function sameRevision(a: Revision, b: Revision): boolean {
   return a.headSha === b.headSha && a.baseSha === b.baseSha && a.startSha === b.startSha;
 }
 export function questionId(s: Snapshot, q: ChangeQuestion): string {

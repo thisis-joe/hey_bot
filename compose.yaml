@@ -41,17 +41,26 @@ services:
     environment:
       TZ: ${TZ:-Asia/Seoul}
       RUNNER_TOKEN: ${RUNNER_TOKEN:?Run setup}
-      MODEL_PROVIDER: ${MODEL_PROVIDER:-gms}
+      MODEL_PROVIDER: ${MODEL_PROVIDER:-}
+      MODEL_SETTINGS_PATH: /model-state/connection.json
+      MODEL_SETTINGS_KEY: ${MODEL_SETTINGS_KEY:-}
+      MODEL_VERIFY_INITIAL_QUESTIONS: ${MODEL_VERIFY_INITIAL_QUESTIONS:-}
       GMS_KEY: ${GMS_KEY:-}
       GMS_MODEL: ${GMS_MODEL:-gpt-6-luna}
       GMS_RESPONSES_URL: ${GMS_RESPONSES_URL:-https://gms.ssafy.io/gmsapi/api.openai.com/v1/responses}
       GMS_USAGE_ENV: ${GMS_USAGE_ENV:-production}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      OPENAI_RESPONSES_URL: ${OPENAI_RESPONSES_URL:-}
+      OLLAMA_URL: ${OLLAMA_URL:-}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-}
       CODEX_HOME: /codex
       CODEX_MODEL: ${CODEX_MODEL:-}
       CODEX_API_KEY: ${CODEX_API_KEY:-}
       CODEX_BASE_URL: ${CODEX_BASE_URL:-}
       CLAUDE_CONFIG_DIR: /claude
       CLAUDE_MODEL: ${CLAUDE_MODEL:-}
+      CLAUDE_API_BASE_URL: ${CLAUDE_API_BASE_URL:-}
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}
@@ -59,6 +68,7 @@ services:
       DATA_ROOT: /data
     volumes:
       - snapshots:/data/jobs:ro
+      - model-settings:/model-state:ro
       - codex-auth:/codex
       - claude-auth:/claude
     tmpfs: ["/tmp:rw,nosuid,size=256m"]
@@ -85,8 +95,15 @@ services:
       TZ: ${TZ:-Asia/Seoul}
       DATABASE_URL: postgres://reviewbot:${BOT_DB_PASSWORD}@postgres:5432/reviewbot
       INTERNAL_TOKEN: ${INTERNAL_TOKEN:?Run setup}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      MODEL_SETTINGS_PATH: /model-state/connection.json
+      MODEL_SETTINGS_KEY: ${MODEL_SETTINGS_KEY:-}
       RUNNER_TOKEN: ${RUNNER_TOKEN:?Run setup}
       RUNNER_URL: http://runner:8091
+      GMS_RESPONSES_URL: ${GMS_RESPONSES_URL:-https://gms.ssafy.io/gmsapi/api.openai.com/v1/responses}
+      OPENAI_RESPONSES_URL: ${OPENAI_RESPONSES_URL:-}
+      CLAUDE_API_BASE_URL: ${CLAUDE_API_BASE_URL:-}
+      OLLAMA_URL: ${OLLAMA_URL:-}
       REPOSITORIES_FILE: /config/repositories.yaml
       DATA_ROOT: /data
       N8N_WAKE_URL: http://n8n:5678/webhook/review-wakeup
@@ -103,6 +120,7 @@ services:
       - ./.local/secrets/github-app.pem:/run/secrets/github-app.pem:ro
       - git-cache:/data/cache
       - snapshots:/data/jobs
+      - model-settings:/model-state
     tmpfs: ["/tmp:rw,noexec,nosuid,size=128m"]
     networks: [control, runner-rpc, controller-egress]
     ports: ["127.0.0.1:${CONTROLLER_PORT:-18092}:8092"]
@@ -152,6 +170,11 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
       controller: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5678/healthz/readiness').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
 
   tunnel:
     image: cloudflare/cloudflared:2026.5.0
@@ -178,6 +201,7 @@ volumes:
   codex-auth:
   claude-auth:
   n8n-state:
+  model-settings:
 networks:
   control: { internal: true }
   runner-rpc: { internal: true }

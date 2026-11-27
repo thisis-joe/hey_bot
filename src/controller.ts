@@ -6,7 +6,7 @@ import { generateQuestions, archivedFindings, sourceExcerpts, type Model } from 
 import { emptyReport, reviewed, isQuestionReport, hasChangeQuestions, withoutKeys, AnswerSchema, type Snapshot, type Report, type Target } from './contracts.js';
 import { publish, Superseded } from './publish.js';
 import { HttpError } from './http-client.js';
-import { parseCommand, type Command } from './commands.js';
+import { isTrialLearningCommand, parseCommand, type Command } from './commands.js';
 import { renderAnswer, renderReport, renderProgress, renderCommandHelp, COMMAND_HELP_HINT, plain, renderAck, ackMarker, summaryMarker, SUMMARY_MARKER, type AckState } from './render.js';
 import { redact } from './redact.js';
 import { handleLearning, learningInput, patches, readable } from './learning-command.js';
@@ -30,7 +30,8 @@ export class Controller {
   constructor(readonly store: Store, readonly platforms: Platform[], readonly workspaces: Workspaces, readonly model: Model, readonly notifications?: Mattermost) { this.workflow = new Workflow(this, workspaces.root ?? '/data'); }
   platform(t: Target): Platform {
     const platform = this.platforms.find(p => p.config.platform === t.platform && p.config.instance === t.instance && p.config.repository === t.repository);
-    if (!platform) throw new Error('Repository no longer allowed'); return platform;
+    if (!platform || (platform.config.enabled === false && platform.config.trialNumber !== t.number)) throw new HttpError(410, 'Repository no longer allowed');
+    return platform;
   }
   async tick(): Promise<string | null> {
     if (this.stopping) return null;
@@ -62,6 +63,7 @@ export class Controller {
   }
   async prepareReview(job: Job, context: FailureContext = {}): Promise<PreparedReview> {
     const platform = this.platform(job.body.target);
+    if (platform.config.enabled === false) throw new HttpError(410, 'Repository automatic generation is disabled');
     const snap = await platform.snapshot(job.body.target.number, job.body.requested || job.body.merged);
     context.snap = snap;
     snap.title = redact(snap.title); snap.description = redact(snap.description);
@@ -79,6 +81,7 @@ export class Controller {
     return { snap, previous, prepared, prepareMs, requireAnswers: context.requireAnswers, cached };
   }
   async generateReview(job: Job, value: PreparedReview): Promise<GeneratedReview> {
+    if (this.platform(job.body.target).config.enabled === false) throw new HttpError(410, 'Repository automatic generation is disabled');
     if (value.cached) return { report: value.cached, diff: {}, reviewSeconds: null };
     const { snap, previous, prepared, prepareMs } = value;
     const issues = (await this.platform(job.body.target).linkedIssues(snap.description)).map(redact);
@@ -89,12 +92,15 @@ export class Controller {
   }
   async validateReview(job: Job, snap: Snapshot): Promise<void> {
     await this.store.assertLease(job.id, job.owner);
-    const live = await this.platform(job.body.target).snapshot(snap.number, job.body.requested || job.body.merged);
+    const platform = this.platform(job.body.target);
+    if (platform.config.enabled === false) throw new HttpError(410, 'Repository automatic generation is disabled');
+    const live = await platform.snapshot(snap.number, job.body.requested || job.body.merged);
     if (!sameRevision(live, snap)) throw new Superseded('Review snapshot changed');
   }
   async publishReview(job: Job): Promise<boolean> {
     if (!job.result) throw new Error('Missing review result');
     const platform = this.platform(job.body.target);
+    if (platform.config.enabled === false) throw new HttpError(410, 'Repository automatic generation is disabled');
     if (!isQuestionReport(job.result)) {
       const live = await platform.snapshot(job.body.target.number, job.body.requested || job.body.merged);
       await this.store.enqueue({ kind: 'review', target: job.body.target, headSha: live.headSha, deliveryId: `questions-v2:${job.id}`, ...(job.body.requested ? { requested: true } : {}), ...(job.body.merged ? { merged: true } : {}) }, true);
@@ -125,7 +131,7 @@ export class Controller {
     const { snap, previous, requireAnswers } = context;
     const superseded = error instanceof Superseded || (error instanceof HttpError && error.status === 410);
     if (superseded) await this.store.supersede(job.id, job.owner);
-    else if (snap && job.state !== 'publishing' && (job.attempts >= 3 || ['rate_limit', 'authentication'].includes(failureInfo(error).code))) {
+    else if (snap && job.state !== 'publishing' && (job.attempts >= 3 || ['rate_limit', 'authentication', 'unconfigured', 'configuration'].includes(failureInfo(error).code))) {
       const failure = recoveryAttempts(job.body, snap) < 3 ? scheduleFailure(failureInfo(error)) : failureInfo(error);
       const failed = { ...emptyReport(snap, 'failed', failureMessage(failure)), failure, requireAnswers: requireAnswers ?? previous?.requireAnswers, findings: archivedFindings(previous ?? null) };
       try { await this.store.saveResult(job.id, job.owner, failed, {}, 0, null, orchestrated); } catch { await this.store.fail(job, 'Review failed after lease loss'); }
@@ -142,6 +148,7 @@ export class Controller {
     const permission = await platform.permission(comment.author); if (permission === 'none') return;
     const normalized = normalizeMention(platform, comment.body);
     let command = parseCommand(normalized);
+    if (platform.config.enabled === false && !isTrialLearningCommand(command)) return;
     const all = [...await platform.comments(job.body.target.number), ...await platform.inlineComments(job.body.target.number)];
     const key = commentKey(comment), marker = `<!-- codereviewbot:reply:${key.replace(/[^\w-]/g, '')} -->`;
     const historical = await this.historicalComments(platform, job.body.target);
@@ -247,6 +254,7 @@ export class Controller {
         await this.store.cleanupWorkspaces(protectedJobs => this.workspaces.cleanup(undefined, protectedJobs)); return;
       }
       for (const platform of this.platforms) {
+        if (platform.config.enabled === false) continue;
         try {
           if (task === 'reconcile') {
             for (const number of await platform.openNumbers()) {

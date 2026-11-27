@@ -15,7 +15,7 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
 COPY migrations ./migrations
-RUN mkdir -p /data/jobs /data/cache && chown -R node:node /data
+RUN mkdir -p /data/jobs /data/cache /model-state && chown -R node:node /data /model-state && chmod 0700 /model-state
 USER node
 CMD ["node", "dist/server.js"]
 

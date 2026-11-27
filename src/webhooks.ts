@@ -1,6 +1,7 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { isBotLogin, type RepositoryConfig } from './config.js';
 import type { Target, Snapshot } from './contracts.js';
+import { isTrialLearningCommand, parseCommand } from './commands.js';
 
 export interface Comment { id: string; body: string; author: string; parentId: string | null; discussionId: string | null; surface: 'issue' | 'review' | 'note' }
 export function commentKey(comment: Pick<Comment, 'surface' | 'id'>): string { return `${comment.surface}-${comment.id}`; }
@@ -16,7 +17,7 @@ export function authenticate(platform: 'github' | 'gitlab', headers: Record<stri
   const body = JSON.parse(raw.toString('utf8'));
   const repository = platform === 'github' ? body.repository?.full_name : body.project?.path_with_namespace;
   const header = (key: string) => typeof headers[key] === 'string' ? headers[key] as string : '';
-  for (const repo of repos.filter(r => r.platform === platform && r.repository === repository && r.enabled !== false)) {
+  for (const repo of repos.filter(r => r.platform === platform && r.repository === repository && (r.enabled !== false || r.trialNumber !== undefined))) {
     const secret = env[repo.webhookSecretEnv]; if (!secret) continue;
     let valid = false;
     if (platform === 'github') valid = equal(`sha256=${createHmac('sha256', secret).update(raw).digest('hex')}`, header('x-hub-signature-256'));
@@ -39,7 +40,14 @@ export function authenticate(platform: 'github' | 'gitlab', headers: Record<stri
 export function normalize(input: Authenticated): Event[] {
   const { repo: r, body: b, deliveryId, event } = input;
   const base = (number: unknown): Target | null => Number.isSafeInteger(number) && Number(number) > 0 ? { platform: r.platform, instance: r.instance, repository: r.repository, number: Number(number) } : null;
-  const output = (kind: Event['kind'], number: unknown, extra: Partial<Event> = {}): Event[] => { const target = base(number); return target ? [{ kind, target, deliveryId, ...extra }] : []; };
+  const output = (kind: Event['kind'], number: unknown, extra: Partial<Event> = {}): Event[] => {
+    const target = base(number);
+    if (!target) return [];
+    if (r.enabled === false) {
+      if (number !== r.trialNumber || kind !== 'command' || !extra.comment || !isTrialLearningCommand(parseCommand(extra.comment.body))) return [];
+    }
+    return [{ kind, target, deliveryId, ...extra }];
+  };
   if (r.platform === 'github') {
     if (event === 'pull_request') {
       if (b.action === 'closed') return b.pull_request?.merged === true

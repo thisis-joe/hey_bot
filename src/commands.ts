@@ -1,5 +1,8 @@
 export type Command = { action: 'tryagain' | 'questions' | 'csinterview' | 'morecs' | 'help' } | { action: 'answer'; id: string; text: string; more?: Answer[] } | { action: 'reveal' } | { action: 'ask'; text: string };
 export interface Answer { id: string; text: string }
+export function isTrialLearningCommand(command: Command | null): boolean {
+  return command?.action === 'answer' || command?.action === 'reveal' || command?.action === 'help';
+}
 // Each answer starts with a question reference (Q2, 심화2, 면접2 or 꼬리2);
 // a reference inside reasoning only splits when a space, an option letter or the end follows.
 const answerRef = /(?<=^|\s)(?:(Q-[a-f0-9]{12})|Q(\d{1,3})(?!\d)|심화\s?(\d{1,3})(?!\d)|면접\s?(\d{1,3})(?!\d)|꼬리\s?(\d{1,3})(?!\d))[.:)]?(?=\s|[A-Za-z](?![A-Za-z0-9])|$)/gi;

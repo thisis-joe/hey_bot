@@ -4,6 +4,7 @@ import type { RepositoryConfig } from './config.js';
 import { authenticate, normalize, equal } from './webhooks.js';
 import type { Controller } from './controller.js';
 import { WorkflowStartSchema, WorkflowConflict } from './workflow-contract.js';
+import { createAdminSetup } from './admin-setup.js';
 
 export async function readBody(req: IncomingMessage, limit = 2 * 1024 * 1024): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -16,9 +17,11 @@ export function send(res: ServerResponse, status: number, value: unknown): void 
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }); res.end(JSON.stringify(value));
 }
 export function application(controller: Controller, repositories: RepositoryConfig[], env: NodeJS.ProcessEnv = process.env) {
+  const adminSetup = createAdminSetup(env);
   const server = createServer(async (req, res) => {
     try {
       const path = new URL(req.url ?? '/', 'http://internal').pathname;
+      if ((req.method === 'GET' || req.method === 'POST') && path === '/admin') { await adminSetup(req, res); return; }
       if (req.method === 'GET' && path === '/healthz') { await controller.store.pool.query('SELECT 1'); send(res, 200, { ok: true }); return; }
       const webhook = path.match(/^\/webhooks\/(github|gitlab)$/);
       if (req.method === 'POST' && webhook) {
@@ -26,7 +29,7 @@ export function application(controller: Controller, repositories: RepositoryConf
         const raw = await readBody(req); let events, input;
         try { input = authenticate(webhook[1] as 'github' | 'gitlab', req.headers, raw, repositories, env); events = normalize(input); }
         catch { send(res, 401, { error: 'Invalid webhook' }); return; }
-        const notified = await controller.notifications?.capture(input);
+        const notified = input.repo.enabled !== false && await controller.notifications?.capture(input);
         const accepted: { event: (typeof events)[number]; id: string }[] = [];
         for (const event of events) { const id = await controller.store.enqueue(event); if (id) accepted.push({ event, id }); }
         const admitted = accepted.length;
