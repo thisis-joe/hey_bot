@@ -42,8 +42,12 @@ try {
       try {
         const acquired = await lock.query('SELECT pg_try_advisory_lock(hashtextextended($1,1)) AS ok', [identity]);
         if (!acquired.rows[0]?.ok) throw new Error('A trial publication is already running for this PR/MR');
-        console.log(JSON.stringify(await publishRepositoryTrial({ platform: client, reviewer, number, draft,
-          record: (report, marker) => store.recordTrialReport(report, marker) })));
+        const target = client.target(number);
+        const previous = (await store.getTarget(target))?.report;
+        console.log(JSON.stringify(await publishRepositoryTrial({ platform: client, reviewer, number, draft, previous,
+          record: (report, marker, replace) => store.recordTrialReport(report, marker, replace),
+          markPublished: marker => store.markTrialPublished(target, marker),
+        })));
       } finally {
         lock.release(true);
       }

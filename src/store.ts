@@ -102,11 +102,21 @@ export class Store {
   }
   async getJob(id: string): Promise<Job | null> { return (await this.pool.query('SELECT * FROM jobs WHERE id=$1', [id])).rows[0] ?? null; }
   async getTarget(t: Target): Promise<{ report: Report | null } | null> { return (await this.pool.query('SELECT * FROM targets WHERE key=$1', [targetKey(t)])).rows[0] ?? null; }
-  async recordTrialReport(report: Report, trialMarker: string): Promise<void> {
+  async recordTrialReport(report: Report, trialMarker: string, replace?: string): Promise<void> {
     const target = report.snapshot;
     const result = await this.pool.query(
-      "INSERT INTO targets(key,target,report) VALUES($1,$2,$3) ON CONFLICT(key) DO UPDATE SET report=EXCLUDED.report WHERE targets.report IS NULL OR targets.report->>'trialMarker'=$4 RETURNING key",
-      [targetKey(target), target, { ...report, trialMarker }, trialMarker]);
+      `INSERT INTO targets(key,target,report) VALUES($1,$2,$3)
+       ON CONFLICT(key) DO UPDATE SET report=CASE WHEN targets.report->>'trialMarker'=$4 THEN targets.report ELSE EXCLUDED.report END
+       WHERE targets.report IS NULL OR targets.report->>'trialMarker'=$4
+         OR (targets.report->>'trialMarker'=$5 AND targets.report->>'trialPublished' IS DISTINCT FROM 'true')
+       RETURNING key`,
+      [targetKey(target), target, { ...report, trialMarker }, trialMarker, replace ?? null]);
+    if (!result.rowCount) throw new Error('This PR/MR already has a stored question report');
+  }
+  async markTrialPublished(target: Target, trialMarker: string): Promise<void> {
+    const result = await this.pool.query(
+      "UPDATE targets SET report=report || '{\"trialPublished\":true}'::jsonb WHERE key=$1 AND report->>'trialMarker'=$2",
+      [targetKey(target), trialMarker]);
     if (!result.rowCount) throw new Error('This PR/MR already has a stored question report');
   }
   /** Operator-only import from authenticated platform reads; bodies alone never establish trust. */

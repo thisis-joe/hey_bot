@@ -16,9 +16,16 @@ test('trial publication can retry a receipt and cannot overwrite an existing rep
   await store.recordTrialReport(generated, 'fixture-trial-1');
   assert.deepEqual((await store.getTarget(generated.snapshot)).report.questions, generated.questions);
   await assert.rejects(() => store.recordTrialReport(generated, 'another-trial'), /already has a stored question report/);
+  const next = { ...generated, snapshot: { ...generated.snapshot, headSha: 'c'.repeat(40) } };
+  await assert.rejects(() => store.recordTrialReport(next, 'fixture-trial-2', 'stale-receipt'), /already has a stored question report/);
+  await store.recordTrialReport(next, 'fixture-trial-2', 'fixture-trial-1');
+  await store.markTrialPublished(next.snapshot, 'fixture-trial-2');
+  await store.recordTrialReport(next, 'fixture-trial-2');
+  assert.deepEqual((await store.getTarget(next.snapshot)).report, { ...next, trialMarker: 'fixture-trial-2', trialPublished: true });
+  await assert.rejects(() => store.recordTrialReport(generated, 'fixture-trial-1', 'fixture-trial-2'), /already has a stored question report/);
   await pool.query("UPDATE targets SET report=report - 'trialMarker' WHERE key=$1", [targetKey(generated.snapshot)]);
-  await assert.rejects(() => store.recordTrialReport(generated, 'fixture-trial-1'), /already has a stored question report/);
-  assert.deepEqual((await store.getTarget(generated.snapshot)).report, generated);
+  await assert.rejects(() => store.recordTrialReport(next, 'fixture-trial-2'), /already has a stored question report/);
+  assert.deepEqual((await store.getTarget(generated.snapshot)).report, { ...next, trialPublished: true });
 });
 test('GitHub and GitLab trial questions support grading and explanation before activation', async t => {
   const pool = new pg.Pool({ connectionString: url }); t.after(() => pool.end());

@@ -59,8 +59,14 @@ test('a disabled trial repository is selectable by an administrator without join
         throw new Error('Fixture accepted the comment but lost its response');
       },
     };
-    const publish = number => publishRepositoryTrial({ platform: live, reviewer: 'admin-fixture', number, draft: result,
-      record: async report => assert.deepEqual(report.questions, initialQuestions()) });
+    const published = [];
+    const publish = (number, draft = result, previous) => publishRepositoryTrial({ platform: live, reviewer: 'admin-fixture', number, draft, previous,
+      record: async (report, token, replacement) => {
+        assert.deepEqual(report.questions, initialQuestions());
+        published.push({ ...report, trialMarker: token, replacement });
+      },
+      markPublished: async () => {},
+    });
     await assert.rejects(() => publish(18), /revision/);
     assert.equal(comments.length, 0);
     await assert.rejects(() => publish(17), /lost its response/);
@@ -70,6 +76,16 @@ test('a disabled trial repository is selectable by an administrator without join
     assert.equal(inlines.length, 2);
     assert.match(comments[0].body, /Heybot 시험 출제/);
     assert.doesNotMatch(comments[0].body, /정답은 B입니다|codereviewbot:summary:v1/);
+    const previous = published[0];
+    const next = { ...result, snapshot: { ...result.snapshot, headSha: 'c'.repeat(40) } };
+    live.snapshot = async number => snapshot({ platform: provider, number, headSha: next.snapshot.headSha });
+    await assert.rejects(() => publish(17, next, previous), /already has a stored question report/);
+    comments.length = 0;
+    await assert.rejects(() => publish(17, next, previous), /already has a stored question report/);
+    inlines.length = 0;
+    await assert.rejects(() => publish(17, next, { ...previous, trialPublished: true }), /already has a stored question report/);
+    await assert.rejects(() => publish(17, next, previous), /lost its response/);
+    assert.equal(published.at(-1).replacement, previous.trialMarker);
   }
   assert.equal(events.filter(entry => entry[0] === 'initial_questions').length, 2);
 });

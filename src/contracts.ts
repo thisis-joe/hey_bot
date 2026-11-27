@@ -134,6 +134,8 @@ export interface Report extends Omit<Analysis, 'findings' | 'resolutions' | 'que
   questions: ChangeQuestion[];
   questionsUnavailableReason?: string;
   failure?: FailureInfo;
+  trialMarker?: string;
+  trialPublished?: boolean;
   // Copied from the base-branch policy so publishing and grading can update the merge gate.
   requireAnswers?: boolean;
 }

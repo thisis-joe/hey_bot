@@ -41,7 +41,7 @@ docker compose exec -T controller node dist/repository-trial-cli.js \
   --platform github --repository example/repo --number 17 --reviewer example-admin > trial.json
 ```
 
-미리보기에는 질문과 관리자용 정답·해설이 담긴다. 실제 시험 댓글 게시를 원하면 동일한 인자에 `--publish`를 추가하고 `< trial.json`으로 미리보기를 넘긴다. GitLab 시험에는 `--platform gitlab`을 지정한다. 미리보기 이후 PR/MR의 커밋이 바뀌면 다시 검사한다. 게시 응답이 유실된 경우 같은 파일로 재시도할 수 있다.
+미리보기에는 질문과 관리자용 정답·해설이 담긴다. 실제 시험 댓글 게시를 원하면 동일한 인자에 `--publish`를 추가하고 `< trial.json`으로 미리보기를 넘긴다. GitLab 시험에는 `--platform gitlab`을 지정한다. 시험 댓글이 게시되기 전에 커밋이 바뀌면 새 미리보기를 만든다. 게시 응답이 유실됐고 커밋이 그대로라면 같은 파일로 재시도할 수 있다. 이미 시험 댓글을 게시한 뒤 커밋이 바뀌었다면 새 시험 PR/MR을 고른다.
 
 PR/MR에서 `/hey answer Q1 B`로 답변하고 질문 스레드에서 `/hey showanswer`로 해설을 확인한다. 시험을 마치면 저장소의 `enabled: true`를 설정하고 Controller를 다시 생성해 머지 후 자동 출제를 켠다.
 

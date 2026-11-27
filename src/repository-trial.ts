@@ -3,7 +3,7 @@ import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { InitialQuestionsSchema, Sha, emptyReport, type Report } from './contracts.js';
-import { sameRevision } from './learning.js';
+import { questionId, sameRevision } from './learning.js';
 import type { Platform } from './platform.js';
 import { redact } from './redact.js';
 import { SUMMARY_MARKER, renderReport, renderReveal, renderQuestionThread, summaryMarker } from './render.js';
@@ -66,12 +66,16 @@ export async function previewRepositoryTrial({ platform, workspaces, model, numb
   }
 }
 
-export async function publishRepositoryTrial({ platform, reviewer, number, draft, record }: {
+const trialMarker = (token: string) => `<!-- heybot:repository-trial:${token} -->`;
+
+export async function publishRepositoryTrial({ platform, reviewer, number, draft, previous, record, markPublished }: {
   platform: PublishTrial;
   reviewer: string;
   number: number;
   draft: unknown;
-  record: (report: Report, marker: string) => Promise<void>;
+  previous?: Report | null;
+  record: (report: Report, marker: string, replace?: string) => Promise<void>;
+  markPublished: (token: string) => Promise<void>;
 }): Promise<{ alreadyPublished: boolean }> {
   const trial = Trial.parse(draft);
   if (!trial.anchors.some(Boolean)) throw new Error('Choose a trial PR/MR with a changed line for the question thread');
@@ -88,14 +92,29 @@ export async function publishRepositoryTrial({ platform, reviewer, number, draft
   snapshot.title = redact(snapshot.title);
   snapshot.description = redact(snapshot.description);
   const token = createHash('sha256').update(JSON.stringify([trial.snapshot, trial.items, trial.anchors])).digest('hex');
-  const marker = `<!-- heybot:repository-trial:${token} -->`;
+  const marker = trialMarker(token);
   const report = { ...emptyReport(snapshot, 'completed', ''), questions: trial.items, requireAnswers: false };
-  await record(report, token);
-  const alreadyPublished = (await platform.comments(number)).some(comment => platform.owned(comment) && comment.body.includes(marker));
+  const comments = (await platform.comments(number)).filter(comment => platform.owned(comment));
+  const alreadyPublished = comments.some(comment => comment.body.includes(marker));
+  let replace: string | undefined;
+  if (previous?.trialMarker && previous.trialMarker !== token) {
+    const priorMarker = trialMarker(previous.trialMarker);
+    if (previous.trialPublished || sameRevision(previous.snapshot, snapshot) || comments.some(comment => comment.body.includes(priorMarker))) {
+      throw new Error('This PR/MR already has a stored question report');
+    }
+    const questionMarkers = previous.questions.map(q => `<!-- codereviewbot:question:${questionId(previous.snapshot, q)} -->`);
+    const priorThreads = await platform.inlineComments(number);
+    if (priorThreads.some(comment => platform.owned(comment) && questionMarkers.some(value => comment.body.includes(value)))) {
+      throw new Error('This PR/MR already has a stored question report');
+    }
+    replace = previous.trialMarker;
+  }
+  await record(report, token, replace);
   if (!alreadyPublished) {
     await confirmRevision();
     await platform.comment(number, `${marker}\n### Heybot 시험 출제\n\n${questionsOnly(report)}`);
   }
+  await markPublished(token);
   const inline = await platform.inlineComments(number);
   for (const [index, question] of trial.items.entries()) {
     const anchor = trial.anchors[index];
