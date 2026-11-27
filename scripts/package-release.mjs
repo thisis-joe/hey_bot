@@ -38,6 +38,7 @@ for (const file of files) {
   await copyFile(file, target);
 }
 await copyFile('docs/self-hosted-install.md', join(output, 'README.md'));
+await copyFile('docs/self-hosted-backup.md', join(output, 'self-hosted-backup.md'));
 await writeFile(join(output, 'compose.yaml'), stringify(compose));
 await writeFile(join(output, 'release.json'), JSON.stringify({ version, platform, images, archiveSha256: hash.digest('hex') }, null, 2) + '\n');
 console.log(`Packaged Heybot ${version} for ${platform} in ${output}`);

@@ -48,3 +48,5 @@ PR/MR에서 `/hey answer Q1 B`로 답변하고 질문 스레드에서 `/hey show
 ## 릴리스 묶음 만들기
 
 소스 체크아웃에서 `npm ci` 후 `node scripts/package-release.mjs 0.1.0 .local/release-0.1.0`을 실행한다. 대상 Linux와 같은 아키텍처에서 묶음을 만들고, 각 릴리스에는 고유 버전을 쓴다. 설치기는 매칭되는 두 이미지 ID와 아카이브 체크섬을 확인한다.
+
+설치 상태의 보존과 업데이트 전 점검은 [백업·복구 안내](self-hosted-backup.md)를 따른다.

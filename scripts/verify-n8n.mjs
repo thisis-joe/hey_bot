@@ -10,6 +10,7 @@ import { setTimeout } from 'node:timers/promises';
 const suffix = randomBytes(4).toString('hex'), prefix = `hey-flow-test-${suffix}`;
 const names = { network: prefix, postgres: prefix + '-postgres', controller: prefix + '-controller', n8n: prefix + '-n8n' };
 const image = 'docker.n8n.io/n8nio/n8n:2.43.8', token = 'n8n-fixture-internal-token-32-chars';
+const verifyRestore = process.argv.includes('--restore');
 const temporary = await mkdtemp(join(tmpdir(), 'hey-n8n-'));
 const created = [];
 const docker = args => execFileSync('docker', args, { encoding: 'utf8', maxBuffer: 32 * 1024 ** 2, timeout: 60000 }).trim();
@@ -66,6 +67,7 @@ try {
   fixture = JSON.parse(fetchInside('http://controller:8092/fixture').body);
   assert.deepEqual(fixture.calls, ['initial_questions']); assert.equal(fixture.comments.length, 2);
   const evidence = { runId: suffix, verifiedAt: new Date().toISOString(), n8n: '2.43.8', postgres: '17', result: 'passed', executedNodes: phases, jobs: fixture.jobs, modelCalls: fixture.calls.length, visibleComments: fixture.comments.length, errors: 0, limits: 'Signed HTTP admission, real application/PostgreSQL/n8n; external platform and AI are fixtures. Schedules are disabled in this isolated probe and recovery uses a fixture-only trigger. Success execution data is retained here for verification only.' };
+  if (verifyRestore) evidence.restore = await restoreFixture();
   await mkdirEvidence(evidence);
   console.log(JSON.stringify(evidence, null, 2));
 } catch (error) {
@@ -81,4 +83,69 @@ async function mkdirEvidence(value) {
   await mkdir('.local/n8n-orchestration', { recursive: true });
   await writeFile(`.local/n8n-orchestration/runtime-${suffix}.json`, JSON.stringify(value, null, 2) + '\n');
   await writeFile('.local/n8n-orchestration/runtime.json', JSON.stringify(value, null, 2) + '\n');
+}
+
+async function restoreFixture() {
+  const copies = [['hey_n8n_test', 'hey_bot_restored'], ['n8n', 'hey_n8n_restored']];
+  for (const [source, target] of copies) {
+    sql('postgres', `CREATE DATABASE ${target};`);
+    const archive = `/tmp/${source}.dump`;
+    docker(['exec', names.postgres, 'pg_dump', '-U', 'postgres', '-Fc', '-f', archive, source]);
+    docker(['exec', names.postgres, 'pg_restore', '-U', 'postgres', '-d', target, '--exit-on-error', archive]);
+  }
+  const reports = 'SELECT report::text FROM targets WHERE report IS NOT NULL ORDER BY key';
+  const credentials = 'SELECT id,md5(data) FROM credentials_entity ORDER BY id';
+  assert.equal(sql('hey_bot_restored', reports), sql('hey_n8n_test', reports));
+  assert.equal(sql('hey_n8n_restored', credentials), sql('n8n', credentials));
+  assert.ok(sql('hey_n8n_restored', credentials).includes('crbInternalAuth'));
+
+  // Run the shipped migrator and render the stored explanation from the restored report.
+  docker(['exec', names.controller, 'node', '--input-type=module', '-e', `
+    import assert from 'node:assert/strict';
+    import { copyFile, mkdtemp, rm } from 'node:fs/promises';
+    import { join } from 'node:path';
+    import { tmpdir } from 'node:os';
+    import pg from 'pg';
+    import { currentModelConfiguration, writeModelSettings } from './dist/model-settings.js';
+    import { Store } from './dist/store.js';
+    import { renderReveal } from './dist/render.js';
+    const pool = new pg.Pool({ connectionString: 'postgres://postgres:fixture-only@postgres:5432/hey_bot_restored' });
+    const state = await mkdtemp(join(tmpdir(), 'hey-fixture-model-'));
+    try {
+      const store = new Store(pool);
+      await store.migrate();
+      const { rows: [row] } = await pool.query("SELECT target FROM targets WHERE report IS NOT NULL ORDER BY key LIMIT 1");
+      const result = (await store.getTarget(row.target)).report;
+      assert.equal(result.questions.length, 2);
+      const item = result.questions[0];
+      assert.ok(item.key?.explanation);
+      assert.match(renderReveal([{ q: item, label: 'Q1' }], result.snapshot, 'restore-probe'), /정답·해설/);
+      const origin = { MODEL_SETTINGS_PATH: join(state, 'connection.json'), MODEL_SETTINGS_KEY: 'a1'.repeat(32) };
+      const selected = { provider: 'openai', url: 'https://example.invalid/v1/responses', model: 'restore-fixture',
+        key: 'private-fixture-key', verifyInitialQuestions: false };
+      await writeModelSettings(origin, selected);
+      const restored = { ...origin, MODEL_SETTINGS_PATH: join(state, 'copy.json') };
+      await copyFile(origin.MODEL_SETTINGS_PATH, restored.MODEL_SETTINGS_PATH);
+      const connected = await currentModelConfiguration(restored);
+      assert.equal(connected.config.status, 'configured');
+      assert.deepEqual(connected.config.connection, selected);
+    } finally {
+      await pool.end();
+      await rm(state, { recursive: true, force: true });
+    }
+  `]);
+  assert.equal(sql('hey_bot_restored', reports), sql('hey_n8n_test', reports), 'migration preserves existing reports');
+
+  const restored = prefix + '-n8n-restored';
+  docker(['run', '-d', '--name', restored, '--network', names.network, '--network-alias', 'n8n-restored', '--memory', '768m',
+    '-e', 'DB_TYPE=postgresdb', '-e', 'DB_POSTGRESDB_HOST=postgres', '-e', 'DB_POSTGRESDB_DATABASE=hey_n8n_restored',
+    '-e', 'DB_POSTGRESDB_USER=postgres', '-e', 'DB_POSTGRESDB_PASSWORD=fixture-only',
+    '-e', 'N8N_ENCRYPTION_KEY=fixture-only-encryption-key-32-chars', '-e', 'N8N_SECURE_COOKIE=false',
+    '-e', 'N8N_DIAGNOSTICS_ENABLED=false', '-e', 'N8N_VERSION_NOTIFICATIONS_ENABLED=false', '-e', 'N8N_RUNNERS_ENABLED=false', image]);
+  created.push(restored);
+  const wake = 'http://n8n-restored:5678/webhook/review-wakeup';
+  await until(() => fetchInside(wake, { method: 'POST' }).status === 403, 'restored webhook requires authentication');
+  assert.equal(fetchInside(wake, { method: 'POST', headers: { authorization: `Bearer ${token}` } }).status, 202);
+  return { result: 'passed', controller: 'migrations and saved explanations retained', model: 'copied settings decrypted with the preserved key',
+    n8n: 'restored workflow authenticated with the original key' };
 }
