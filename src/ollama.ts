@@ -76,6 +76,7 @@ export class Ollama implements Model {
           messages.push(result);
         }
         if (Buffer.byteLength(JSON.stringify(messages)) > 8 * 1024 * 1024) throw new ModelFailure({ provider, code: 'invalid_output' });
+        if (this.check && snapshot.readSource) break;
       }
       if (this.check && !snapshot.readSource) throw new ModelFailure({ provider, code: 'invalid_output' });
       messages.push({ role: 'user', content: 'Return only the requested JSON now, using the source already available above.' });
