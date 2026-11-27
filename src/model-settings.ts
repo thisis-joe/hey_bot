@@ -4,15 +4,16 @@ import { dirname } from 'node:path';
 import { z } from 'zod';
 import { readModelConnection, type ConnectionConfig } from './model-connection.js';
 
+export const ManagedProvider = z.enum(['openai', 'gms', 'claude-api', 'ollama']);
 const Stored = z.strictObject({
   version: z.uuid(),
   connection: z.strictObject({
-    provider: z.enum(['openai', 'gms']), url: z.string(), model: z.string(), verifyInitialQuestions: z.boolean(),
+    provider: ManagedProvider, url: z.string(), model: z.string(), verifyInitialQuestions: z.boolean(),
     key: z.string(), nonce: z.string(), tag: z.string(),
   }).nullable(),
 });
 type Stored = z.infer<typeof Stored>;
-type Selected = (Extract<ConnectionConfig, { status: 'configured' }>['connection']) & { provider: 'openai' | 'gms' };
+type Selected = (Extract<ConnectionConfig, { status: 'configured' }>['connection']) & { provider: z.infer<typeof ManagedProvider> };
 
 function encryptionKey(env: NodeJS.ProcessEnv): Buffer {
   const raw = env.MODEL_SETTINGS_KEY ?? '';
@@ -44,7 +45,11 @@ export async function currentModelConfiguration(env: NodeJS.ProcessEnv): Promise
     decipher.setAAD(Buffer.from(JSON.stringify([version, provider, url, model, verifyInitialQuestions])));
     decipher.setAuthTag(Buffer.from(tag, 'base64url'));
     const secret = Buffer.concat([decipher.update(Buffer.from(key, 'base64url')), decipher.final()]).toString('utf8');
-    return { version, config: { status: 'configured', provider, connection: { provider, url, model, verifyInitialQuestions, key: secret } } };
+    const common = { model, verifyInitialQuestions };
+    const selected: Selected = provider === 'ollama' ? { ...common, provider, baseUrl: url }
+      : provider === 'claude-api' ? { ...common, provider, baseUrl: url, key: secret }
+      : { ...common, provider, url, key: secret };
+    return { version, config: { status: 'configured', provider, connection: selected } };
   } catch {
     return { config: { status: 'invalid', field: 'MODEL_SETTINGS_PATH' } };
   }
@@ -56,7 +61,9 @@ export async function writeModelSettings(env: NodeJS.ProcessEnv, selected: Selec
   const version = randomUUID();
   let connection: Stored['connection'] = null;
   if (selected) {
-    const { provider, url, model, verifyInitialQuestions, key } = selected;
+    const { provider, model, verifyInitialQuestions } = selected;
+    const url = 'baseUrl' in selected ? selected.baseUrl : selected.url;
+    const key = 'key' in selected ? selected.key : '';
     const nonce = randomBytes(12), cipher = createCipheriv('aes-256-gcm', encryptionKey(env), nonce);
     cipher.setAAD(Buffer.from(JSON.stringify([version, provider, url, model, verifyInitialQuestions])));
     const secret = Buffer.concat([cipher.update(key, 'utf8'), cipher.final()]);

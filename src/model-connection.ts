@@ -114,8 +114,8 @@ export function createModel(connection: ModelConnection, dataRoot: string, check
   switch (connection.provider) {
     case 'codex': return new Codex(dataRoot, connection.home, connection.binary, connection.model, connection.baseUrl);
     case 'claude': return new ClaudeCode(dataRoot, connection.home, connection.binary, connection.model);
-    case 'claude-api': return new ClaudeApi(dataRoot, connection, check);
-    case 'ollama': return new Ollama(dataRoot, connection, check);
+    case 'claude-api': return new ClaudeApi(dataRoot, connection, check, beforeRequest);
+    case 'ollama': return new Ollama(dataRoot, connection, check, beforeRequest);
     case 'gms':
     case 'openai': return new ResponsesModel(dataRoot, connection, check, beforeRequest);
   }

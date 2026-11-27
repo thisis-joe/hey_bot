@@ -39,7 +39,7 @@ export async function listOllamaModels(connection: OllamaEndpoint, signal = Abor
 }
 
 export class Ollama implements Model {
-  constructor(readonly root: string, readonly connection: OllamaEndpoint & { model: string }, readonly check = false) {}
+  constructor(readonly root: string, readonly connection: OllamaEndpoint & { model: string }, readonly check = false, readonly beforeRequest?: () => Promise<void>) {}
 
   async run(phase: ModelPhase, prompt: string, id: string, timeoutMs = 600000): Promise<unknown> {
     const { provider, baseUrl, model } = this.connection;
@@ -50,6 +50,7 @@ export class Ollama implements Model {
     const messages = [{ role: 'system', content: system }, { role: 'user', content: redact(prompt) }];
     // Some local models work with tools and a JSON grammar only on separate turns.
     const chat = async (mode: { tools: typeof tools } | { format: typeof format }) => {
+      await this.beforeRequest?.();
       const response = Chat.parse(await modelApiJson(url, {
         method: 'POST', headers: { 'content-type': 'application/json' }, signal,
         body: JSON.stringify({ model, messages, stream: false, think: false, options: { temperature: 0.2 }, ...mode }),

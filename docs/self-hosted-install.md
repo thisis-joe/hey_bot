@@ -16,7 +16,7 @@ node scripts/install.mjs
 ssh -L 18092:127.0.0.1:18092 hey-admin@hey-server
 ```
 
-관리 화면에서 OpenAI 또는 GMS 모델과 API 키를 입력한 뒤 `샘플 검사 후 적용`을 누른다. OpenAI 표준 주소는 해당 키의 모델 목록을 조회할 수 있다. GMS와 목록 API가 없는 게이트웨이는 모델 ID를 직접 입력한다. 적용된 키는 암호화해 `model-settings` 볼륨에 저장한다. 상태를 백업할 때는 볼륨과 `.env`의 `MODEL_SETTINGS_KEY`를 함께 보관한다.
+관리 화면에서 공급자와 모델을 선택한 뒤 `샘플 검사 후 적용`을 누른다. OpenAI와 Claude Messages는 키의 모델 목록을, Ollama는 팀 서버에 설치된 모델 목록을 조회한다. GMS와 목록 API가 없는 게이트웨이는 모델 ID를 직접 입력한다. 팀 내부 Ollama에는 키가 필요 없으며 `.env`의 `OLLAMA_URL`로 주소를 지정한다. 적용된 API 키는 암호화해 `model-settings` 볼륨에 저장한다. 상태를 백업할 때는 볼륨과 `.env`의 `MODEL_SETTINGS_KEY`를 함께 보관한다.
 
 설정 파일만 사용하는 설치에서는 `.env.example`의 공급자 선택지를 참고해 `.env`를 편집하고 같은 릴리스 이미지로 공개 샘플 검사를 실행한다. 관리 화면에서 저장한 설정은 해당 파일보다 우선 적용된다. 관리 화면에서 연결을 해제하면 이 설치의 모델 요청을 중단한다.
 

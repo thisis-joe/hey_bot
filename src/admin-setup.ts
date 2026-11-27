@@ -3,10 +3,10 @@ import { createHmac, randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { equal } from './webhooks.js';
 import { readBody } from './application.js';
-import { checkModelConnection, readModelConnection } from './model-connection.js';
+import { checkModelConnection, listConnectionModels, readModelCatalog, readModelConnection } from './model-connection.js';
 import { modelApiJson } from './model-api.js';
 import { failureInfo } from './model-failure.js';
-import { canManageModels, currentModelConfiguration, writeModelSettings } from './model-settings.js';
+import { ManagedProvider, canManageModels, currentModelConfiguration, writeModelSettings } from './model-settings.js';
 
 const RunnerHealth = z.object({
   modelStatus: z.enum(['unconfigured', 'invalid', 'configured']),
@@ -28,6 +28,7 @@ const sessionSeconds = 1800;
 const Catalog = z.object({ data: z.array(z.object({ id: z.string().min(1).max(200) })) });
 const html = (value: string) => value.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!);
 const sign = (password: string, purpose: string, value: string) => createHmac('sha256', password).update(`${purpose}:${value}`).digest('base64url');
+const providerLabels: Record<z.infer<typeof ManagedProvider>, string> = { openai: 'OpenAI', gms: 'GMS', 'claude-api': 'Claude Messages', ollama: 'Ollama' };
 
 function session(req: IncomingMessage, password: string): string | undefined {
   const cookie = req.headers.cookie?.split(';').map(value => value.trim()).find(value => value.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1);
@@ -54,25 +55,26 @@ async function page(res: ServerResponse, env: NodeJS.ProcessEnv, csrf: string, c
   const modelId = current?.model ?? active?.model ?? '';
   const gmsUrl = env.GMS_RESPONSES_URL || 'https://gms.ssafy.io/gmsapi/api.openai.com/v1/responses';
   const openaiUrl = env.OPENAI_RESPONSES_URL || 'https://api.openai.com/v1/responses';
+  const claudeUrl = env.CLAUDE_API_BASE_URL || 'https://api.anthropic.com/';
+  const ollamaUrl = env.OLLAMA_URL || 'http://127.0.0.1:11434';
   const visibleEndpoint = (value: string) => { try { const url = new URL(value); return url.origin + url.pathname; } catch { return '설정 오류'; } };
   const modelForm = canManageModels(env) ? `
 <form method="post" action="/admin">
   <input type="hidden" name="csrf" value="${csrf}">
   <label for="provider">공급자</label>
   <select id="provider" name="provider">
-    <option value="openai"${provider === 'openai' ? ' selected' : ''}>OpenAI</option>
-    <option value="gms"${provider === 'gms' ? ' selected' : ''}>GMS</option>
+    ${Object.entries(providerLabels).map(([id, title]) => `<option value="${id}"${provider === id ? ' selected' : ''}>${title}</option>`).join('')}
   </select>
   <label for="model">모델 ID</label>
   <input id="model" name="model" maxlength="200" value="${html(modelId)}" list="model-catalog">
   <datalist id="model-catalog">${catalog.map(model => `<option value="${html(model)}"></option>`).join('')}</datalist>
-  <label for="key">API 키</label>
+  <label for="key">API 키 (Ollama는 생략)</label>
   <input id="key" name="key" type="password" maxlength="1024" autocomplete="off">
   <label for="verify">최초 질문 독립 풀이</label>
   <select id="verify" name="verify"><option value="">공급자 기본값</option><option value="true">사용</option><option value="false">해제</option></select>
-  <p>OpenAI <code>${html(visibleEndpoint(openaiUrl))}</code><br>GMS <code>${html(visibleEndpoint(gmsUrl))}</code></p>
+  <p>OpenAI <code>${html(visibleEndpoint(openaiUrl))}</code><br>GMS <code>${html(visibleEndpoint(gmsUrl))}</code><br>Claude Messages <code>${html(visibleEndpoint(claudeUrl))}</code><br>Ollama <code>${html(visibleEndpoint(ollamaUrl))}</code></p>
   <p>검사에는 공개 샘플을 사용합니다. API 요청에는 공급자의 과금 정책이 적용됩니다. 적용 범위는 이 설치에 연결된 저장소입니다.</p>
-  <button name="intent" value="catalog">OpenAI 모델 조회</button>
+  <button name="intent" value="catalog">모델 목록 조회</button>
   <button name="intent" value="save">샘플 검사 후 적용</button>
 </form>
 <form method="post" action="/admin">
@@ -131,23 +133,36 @@ export function createAdminSetup(env: NodeJS.ProcessEnv) {
       if (intent === 'clear') {
         await writeModelSettings(env, null);
       } else {
-        const provider = form.get('provider'), key = form.get('key') ?? '', model = (form.get('model') ?? '').trim();
-        if ((provider !== 'openai' && provider !== 'gms') || (intent !== 'catalog' && intent !== 'save') || !key || key.length > 1024 || model.length > 200) {
+        const provider = ManagedProvider.safeParse(form.get('provider')).data;
+        const key = form.get('key') ?? '', model = (form.get('model') ?? '').trim();
+        if (!provider || (intent !== 'catalog' && intent !== 'save') || (provider !== 'ollama' && !key) || key.length > 1024 || model.length > 200) {
           await page(res, env, csrf, 400, '공급자, API 키와 모델 ID를 확인하세요.'); return;
         }
-        const selected = readModelConnection({
+        const candidateEnv = {
           ...env, MODEL_PROVIDER: provider, MODEL_VERIFY_INITIAL_QUESTIONS: form.get('verify') ?? '',
-          ...(provider === 'openai' ? { OPENAI_API_KEY: key, OPENAI_MODEL: intent === 'catalog' ? 'catalog' : model } : { GMS_KEY: key, GMS_MODEL: model }),
-        });
-        if (selected.status !== 'configured' || (selected.connection.provider !== 'openai' && selected.connection.provider !== 'gms')) {
+          OPENAI_API_KEY: provider === 'openai' ? key : undefined, OPENAI_MODEL: intent === 'catalog' ? 'catalog' : model,
+          GMS_KEY: provider === 'gms' ? key : undefined, GMS_MODEL: model,
+          ANTHROPIC_API_KEY: provider === 'claude-api' ? key : undefined, CLAUDE_MODEL: model, OLLAMA_MODEL: model,
+        };
+        if (intent === 'catalog' && (provider === 'claude-api' || provider === 'ollama')) {
+          const catalogConnection = readModelCatalog(candidateEnv);
+          if ('field' in catalogConnection) { await page(res, env, csrf, 400, '모델 공급자와 연결 설정을 확인하세요.'); return; }
+          const models = await listConnectionModels(catalogConnection);
+          const feedback = provider === 'ollama' ? '설치된 모델 ID를 선택하세요.' : '모델 목록을 불러왔습니다. ID를 고르고 API 키를 다시 입력하세요.';
+          await page(res, env, csrf, 200, feedback, models.map(entry => entry.id), { provider, model });
+          return;
+        }
+        const selected = readModelConnection(candidateEnv);
+        if (selected.status !== 'configured' || selected.connection.provider === 'codex' || selected.connection.provider === 'claude') {
           await page(res, env, csrf, 400, '공급자, API 키와 모델 ID를 확인하세요.'); return;
         }
         const target = selected.connection;
-        if (new URL(target.url).search) {
+        const endpointUrl = new URL('baseUrl' in target ? target.baseUrl : target.url);
+        if (endpointUrl.search) {
           await page(res, env, csrf, 400, '관리 화면에서는 쿼리 매개변수 없는 대상 주소를 사용하세요.'); return;
         }
         if (intent === 'catalog') {
-          if (provider !== 'openai' || new URL(target.url).pathname !== '/v1/responses') {
+          if (target.provider !== 'openai' || endpointUrl.pathname !== '/v1/responses') {
             await page(res, env, csrf, 400, '이 연결의 모델 ID는 직접 입력하세요.'); return;
           }
           const models = Catalog.parse(await modelApiJson(new URL('/v1/models', target.url), {
@@ -157,7 +172,7 @@ export function createAdminSetup(env: NodeJS.ProcessEnv) {
           return;
         }
         await checkModelConnection(target);
-        await writeModelSettings(env, { ...target, provider });
+        await writeModelSettings(env, target);
       }
       res.writeHead(303, { ...headers, location: '/admin' }).end();
     } catch (error) {

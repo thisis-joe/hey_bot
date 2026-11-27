@@ -102,6 +102,8 @@ services:
       RUNNER_URL: http://runner:8091
       GMS_RESPONSES_URL: ${GMS_RESPONSES_URL:-https://gms.ssafy.io/gmsapi/api.openai.com/v1/responses}
       OPENAI_RESPONSES_URL: ${OPENAI_RESPONSES_URL:-}
+      CLAUDE_API_BASE_URL: ${CLAUDE_API_BASE_URL:-}
+      OLLAMA_URL: ${OLLAMA_URL:-}
       REPOSITORIES_FILE: /config/repositories.yaml
       DATA_ROOT: /data
       N8N_WAKE_URL: http://n8n:5678/webhook/review-wakeup

@@ -120,3 +120,57 @@ test('administrator tests, replaces and clears the active key through the shared
   await assert.rejects(getModel, error => error.failure?.code === 'unconfigured');
   assert.equal(calls.length, beforeClear, 'revocation prevents further rounds and new requests');
 });
+
+test('the admin registers Claude and keyless Ollama with their own catalog and endpoint', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'hey-admin-providers-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const workspace = '88888888-8888-4888-8888-888888888888';
+  await mkdir(join(root, 'jobs', workspace, 'source'), { recursive: true });
+  const calls = [];
+  const gateway = await local(t, createServer(async (req, res) => {
+    calls.push({ url: req.url, key: req.headers['x-api-key'], auth: req.headers.authorization });
+    if (req.url.startsWith('/v1/models')) {
+      res.end(JSON.stringify({ data: [{ id: 'claude-fixture', display_name: 'Claude Fixture' }], has_more: false, last_id: 'claude-fixture' })); return;
+    }
+    if (req.url === '/api/tags') { res.end(JSON.stringify({ models: [{ name: 'local:fixture', size: 23 }] })); return; }
+    let raw = '';
+    for await (const part of req) raw += part;
+    const body = JSON.parse(raw), claude = req.url === '/v1/messages';
+    const checking = body.messages.some(message => /^Use the snapshot read tool/.test(message.content));
+    const reply = JSON.stringify(checking ? { premise: null, answer: '17', why: null, unverified: null,
+      evidence: [{ path: 'sample.ts', line: 1, side: 'RIGHT', reason: 'Declared value' }] } : { questions: initialQuestions() });
+    if (claude) {
+      assert.equal(body.model, 'claude-fixture');
+      const tool = checking && body.messages.length < 2;
+      res.end(JSON.stringify(tool ? { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'sample', name: 'read_file', input: { path: 'sample.ts' } }] }
+        : { stop_reason: 'end_turn', content: [{ type: 'text', text: reply }] }));
+    } else {
+      assert.equal(body.model, 'local:fixture');
+      const message = { role: 'assistant', content: body.format ? reply : '' };
+      if (checking && body.tools) message.tool_calls = [{ type: 'function', function: { name: 'read_file', arguments: { path: 'sample.ts' } } }];
+      res.end(JSON.stringify({ done: true, done_reason: 'stop', message }));
+    }
+  }));
+  const storage = { MODEL_SETTINGS_PATH: join(root, 'settings.json'), MODEL_SETTINGS_KEY: 'fd'.repeat(32) };
+  const runner = await startRunner(t, { ...storage, DATA_ROOT: root });
+  const admin = 'admin-fixture-0000000000000000000000';
+  const url = await local(t, application({}, [], { ...storage, ADMIN_PASSWORD: admin, RUNNER_URL: runner.url,
+    CLAUDE_API_BASE_URL: gateway, OLLAMA_URL: gateway }));
+  const login = await fetch(url + '/admin', { headers: { authorization: `Basic ${Buffer.from(`admin:${admin}`).toString('base64')}` } });
+  const cookie = login.headers.get('set-cookie').split(';')[0];
+  const csrf = (await login.text()).match(/name="csrf" value="([^"]+)"/)[1];
+  for (const [provider, model, key] of [['claude-api', 'claude-fixture', 'fixture-claude-api-key'], ['ollama', 'local:fixture', '']]) {
+    const submit = intent => fetch(url + '/admin', { method: 'POST', redirect: 'manual', headers: { cookie, origin: url },
+      body: new URLSearchParams({ intent, csrf, provider, model, key }) });
+    const list = await submit('catalog');
+    assert.equal(list.status, 200);
+    assert.match(await list.text(), new RegExp(model));
+    const save = await submit('save');
+    assert.equal(save.status, 303, await save.text());
+    const active = await new HttpModel(runner.url, runner.token).run('initial_questions', 'Fixture questions', workspace, 5000);
+    assert.deepEqual(active, { questions: initialQuestions() });
+    assert.doesNotMatch(await readFile(storage.MODEL_SETTINGS_PATH, 'utf8'), /fixture-claude-api-key/);
+  }
+  assert.ok(calls.some(call => call.url === '/v1/messages' && call.key === 'fixture-claude-api-key'));
+  assert.ok(calls.some(call => call.url === '/api/chat' && call.auth === undefined && call.key === undefined));
+});

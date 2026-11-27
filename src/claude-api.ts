@@ -49,7 +49,7 @@ export async function listClaudeModels(connection: ClaudeApiCredentials): Promis
 }
 
 export class ClaudeApi implements Model {
-  constructor(readonly root: string, readonly connection: ClaudeApiCredentials & { model: string }, readonly check = false) {}
+  constructor(readonly root: string, readonly connection: ClaudeApiCredentials & { model: string }, readonly check = false, readonly beforeRequest?: () => Promise<void>) {}
 
   async run(phase: ModelPhase, prompt: string, id: string, timeoutMs = 600000): Promise<unknown> {
     const { model, provider, baseUrl } = this.connection;
@@ -71,6 +71,7 @@ export class ClaudeApi implements Model {
     try {
       for (let round = 0; round < maxRounds; round++) {
         const last = round === maxRounds - 1;
+        await this.beforeRequest?.();
         const result = Message.parse(await modelApiJson(url, {
           method: 'POST', headers: headers(this.connection), signal,
           body: JSON.stringify({ model, messages, system, max_tokens: 8192, tools,
