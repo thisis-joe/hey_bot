@@ -31,6 +31,20 @@ docker compose run --rm --no-deps runner node dist/runner-server.js --check-mode
 
 Cloudflare Tunnel을 쓰는 경우 `ops/cloudflared.example.yml`을 `.local/cloudflared.yml`로 복사해 터널 ID와 호스트를 설정하고 터널 자격 증명을 `.local/secrets/tunnel.json`에 둔다. `docker compose --profile tunnel up -d --no-build`로 실행한다.
 
+## 시험 PR/MR
+
+GitHub App 또는 GitLab 봇의 자격 증명과 웹훅 비밀을 설정한다. 시험할 저장소를 `enabled: false`로 두고 그 저장소의 `trialNumber`에 열린 소규모 PR 번호를 입력한다. GitLab에서는 MR의 IID를 사용한다. Controller를 다시 생성하면 이 PR/MR에 한해 답변·해설·도움말 웹훅이 열린다.
+
+```sh
+umask 077
+docker compose exec -T controller node dist/repository-trial-cli.js \
+  --platform github --repository example/repo --number 17 --reviewer example-admin > trial.json
+```
+
+미리보기에는 질문과 관리자용 정답·해설이 담긴다. 실제 시험 댓글 게시를 원하면 동일한 인자에 `--publish`를 추가하고 `< trial.json`으로 미리보기를 넘긴다. GitLab 시험에는 `--platform gitlab`을 지정한다. 미리보기 이후 PR/MR의 커밋이 바뀌면 다시 검사한다. 게시 응답이 유실된 경우 같은 파일로 재시도할 수 있다.
+
+PR/MR에서 `/hey answer Q1 B`로 답변하고 질문 스레드에서 `/hey showanswer`로 해설을 확인한다. 시험을 마치면 저장소의 `enabled: true`를 설정하고 Controller를 다시 생성해 머지 후 자동 출제를 켠다.
+
 ## 릴리스 묶음 만들기
 
 소스 체크아웃에서 `npm ci` 후 `node scripts/package-release.mjs 0.1.0 .local/release-0.1.0`을 실행한다. 대상 Linux와 같은 아키텍처에서 묶음을 만들고, 각 릴리스에는 고유 버전을 쓴다. 설치기는 매칭되는 두 이미지 ID와 아카이브 체크섬을 확인한다.

@@ -102,6 +102,13 @@ export class Store {
   }
   async getJob(id: string): Promise<Job | null> { return (await this.pool.query('SELECT * FROM jobs WHERE id=$1', [id])).rows[0] ?? null; }
   async getTarget(t: Target): Promise<{ report: Report | null } | null> { return (await this.pool.query('SELECT * FROM targets WHERE key=$1', [targetKey(t)])).rows[0] ?? null; }
+  async recordTrialReport(report: Report, trialMarker: string): Promise<void> {
+    const target = report.snapshot;
+    const result = await this.pool.query(
+      "INSERT INTO targets(key,target,report) VALUES($1,$2,$3) ON CONFLICT(key) DO UPDATE SET report=EXCLUDED.report WHERE targets.report IS NULL OR targets.report->>'trialMarker'=$4 RETURNING key",
+      [targetKey(target), target, { ...report, trialMarker }, trialMarker]);
+    if (!result.rowCount) throw new Error('This PR/MR already has a stored question report');
+  }
   /** Operator-only import from authenticated platform reads; bodies alone never establish trust. */
   async rememberBotComments(target: Target, comments: RemoteComment[], botLogin: string): Promise<void> {
     await this.transaction(async c => {

@@ -2,10 +2,59 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import pg from 'pg';
 import { Store, targetKey } from '../../dist/store.js';
-import { snapshot, report } from '../fixtures.mjs';
+import { Controller } from '../../dist/controller.js';
+import { renderQuestionThread } from '../../dist/render.js';
+import { snapshot, report, initialQuestions } from '../fixtures.mjs';
 
 const url = process.env.TEST_DATABASE_URL;
 if (!url) throw new Error('Set TEST_DATABASE_URL to a disposable PostgreSQL database');
+test('trial publication can retry a receipt and cannot overwrite an existing report', async t => {
+  const pool = new pg.Pool({ connectionString: url }); t.after(() => pool.end());
+  const store = new Store(pool); await store.migrate(); await pool.query('TRUNCATE deliveries,jobs,targets CASCADE');
+  const generated = report({ snapshot: snapshot({ number: 817 }) });
+  await store.recordTrialReport(generated, 'fixture-trial-1');
+  await store.recordTrialReport(generated, 'fixture-trial-1');
+  assert.deepEqual((await store.getTarget(generated.snapshot)).report.questions, generated.questions);
+  await assert.rejects(() => store.recordTrialReport(generated, 'another-trial'), /already has a stored question report/);
+  await pool.query("UPDATE targets SET report=report - 'trialMarker' WHERE key=$1", [targetKey(generated.snapshot)]);
+  await assert.rejects(() => store.recordTrialReport(generated, 'fixture-trial-1'), /already has a stored question report/);
+  assert.deepEqual((await store.getTarget(generated.snapshot)).report, generated);
+});
+test('GitHub and GitLab trial questions support grading and explanation before activation', async t => {
+  const pool = new pg.Pool({ connectionString: url }); t.after(() => pool.end());
+  const store = new Store(pool); await store.migrate(); await pool.query('TRUNCATE deliveries,jobs,targets CASCADE');
+  for (const provider of ['github', 'gitlab']) {
+    const snap = snapshot({ platform: provider, number: provider === 'github' ? 817 : 818 });
+    const questions = initialQuestions(), generated = report({ snapshot: snap, questions, requireAnswers: false });
+    await store.recordTrialReport(generated, 'trial-fixture');
+    const surface = provider === 'github' ? 'review' : 'note';
+    const discussionId = provider === 'gitlab' ? 'fixture-thread' : undefined;
+    const remote = { id: '11', author: 'hey[bot]', surface, body: renderQuestionThread(questions[0], snap, 1), discussionId };
+    const replies = [];
+    const platform = {
+      config: { platform: provider, instance: snap.instance, repository: snap.repository, botLogin: 'hey[bot]', enabled: false, trialNumber: snap.number },
+      async snapshot() { return { ...snap }; },
+      async permission() { return 'write'; },
+      async comments() { return []; },
+      async inlineComments() { return [remote]; },
+      async reply(_number, body) { replies.push(body); },
+      owned(comment) { return comment.author === 'hey[bot]'; },
+    };
+    const controller = new Controller(store, [platform], { root: '/unused' }, { async run() { assert.fail('Saved key requires no new model call'); } });
+    for (const [id, command] of [['12', '/hey answer Q1 B'], ['13', '/hey showanswer']]) {
+      const jobId = await store.enqueue({ kind: 'command', target: snap, deliveryId: 'trial-' + id,
+        comment: { id, body: command, author: 'fixture-member', parentId: provider === 'github' ? '11' : null, discussionId: discussionId ?? null, surface } });
+      const job = await store.claim();
+      assert.equal(job.id, jobId);
+      await controller.perform(job);
+      assert.equal((await store.getJob(jobId)).state, 'completed');
+    }
+    assert.equal(replies.length, 2);
+    assert.match(replies[0], /정답|맞/);
+    assert.match(replies[1], /정답은 B입니다/);
+    assert.match(replies[1], /D 보기 해설/);
+  }
+});
 test('publishing an error notice remains failed and health stops counting it only after successful regeneration', async t => {
   const pool = new pg.Pool({ connectionString: url }); t.after(() => pool.end());
   const store = new Store(pool); await store.migrate(); await pool.query('TRUNCATE deliveries,jobs,targets CASCADE');

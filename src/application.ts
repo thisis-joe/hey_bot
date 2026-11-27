@@ -29,7 +29,7 @@ export function application(controller: Controller, repositories: RepositoryConf
         const raw = await readBody(req); let events, input;
         try { input = authenticate(webhook[1] as 'github' | 'gitlab', req.headers, raw, repositories, env); events = normalize(input); }
         catch { send(res, 401, { error: 'Invalid webhook' }); return; }
-        const notified = await controller.notifications?.capture(input);
+        const notified = input.repo.enabled !== false && await controller.notifications?.capture(input);
         const accepted: { event: (typeof events)[number]; id: string }[] = [];
         for (const event of events) { const id = await controller.store.enqueue(event); if (id) accepted.push({ event, id }); }
         const admitted = accepted.length;

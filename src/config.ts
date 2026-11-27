@@ -10,6 +10,7 @@ export const RepositorySchema = z.strictObject({
   webhookAuth: z.enum(['hmac', 'signing', 'secret']),
   tokenEnv: z.string().default(''), installationId: z.string().regex(/^\d+$/).optional(),
   enabled: z.boolean().default(true),
+  trialNumber: z.int().positive().optional(),
   mattermostWebhookEnv: z.string().regex(/^[A-Z][A-Z0-9_]+$/).optional(),
   mattermostChannel: z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/).optional(),
 });
@@ -18,7 +19,7 @@ export function isBotLogin(config: Pick<RepositoryConfig, 'botLogin' | 'retiredB
   return login === config.botLogin || Boolean(config.retiredBotLogins?.includes(login));
 }
 export const RepositoriesSchema = z.strictObject({ version: z.literal(1), repositories: z.array(RepositorySchema).max(100) });
-export async function readRepositories(path: string): Promise<RepositoryConfig[]> {
+export async function readRepositories(path: string, options: { includeDisabled?: boolean } = {}): Promise<RepositoryConfig[]> {
   const data = RepositoriesSchema.parse(parse(await readFile(path, 'utf8')));
   const seen = new Set<string>();
   for (const r of data.repositories) {
@@ -30,5 +31,5 @@ export async function readRepositories(path: string): Promise<RepositoryConfig[]
     if (seen.has(key)) throw new Error('Duplicate repository configuration');
     seen.add(key);
   }
-  return data.repositories.filter(r => r.enabled);
+  return options.includeDisabled ? data.repositories : data.repositories.filter(r => r.enabled || r.trialNumber !== undefined);
 }

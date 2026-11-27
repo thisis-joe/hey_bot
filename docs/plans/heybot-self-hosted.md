@@ -39,6 +39,7 @@
 | SERVER-02 | OpenAI/GMS 관리 화면 구현. 관리자 세션·CSRF·내부 토큰 차단, 모델 목록, 샘플 검사 후 저장, 실패 시 기존 연결 유지, 키 교체·암호화·해제와 해제 직후 추가 호출 차단을 Controller → Runner HTTP fixture로 확인. 단위 215개, 격리 PostgreSQL 71개, Compose 구성 검사 통과. | 공식 코드 검토와 실제 API 키 검증 대기. Claude·Ollama는 SERVER-05, 검증된 무료 연결은 RELEASE-02에서 관리 화면에 붙인다. |
 | MODEL-04 | OpenRouter용 고정 공개 샘플 검사 구현. 명시적 무료 모델, 0원 가격, 지정 추론 공급자, 구조화 출력, 한도 응답을 HTTP fixture로 확인. 가격 변경과 추론 공급자 불일치 시 추론 요청이 차단된다. 단위 216개 통과. | Groq의 조직 과금 등급 사전 확인 수단과 승인된 실제 무료 키·엔드포인트 검증 대기. 저장소 대상 체험과 자동 전환은 아직 연결되지 않았다. |
 | SERVER-05 | 관리자 화면에서 Claude Messages와 팀 내부 Ollama 모델 조회·공개 샘플 검사·원자적 적용과 Runner 호출을 HTTP fixture로 확인. 기존 CLI와 기존 Responses 설정 호환, 단위 217개 및 Compose 구성 검사 통과. | 공식 코드 검토, 실제 Claude API와 팀 Ollama 모델 검증 대기. |
+| SERVER-03 | 비활성 저장소의 시험 PR/MR 미리보기와 명시적 게시, 서명된 답변·해설 웹훅과 저장된 질문 기반 채점을 GitHub·GitLab fixture로 확인. 응답 유실 재시도 시 요약·스레드 중복 및 비활성 저장소의 자동 출제 차단. 단위 219개, 격리 PostgreSQL 73개, n8n 실행 `cd837469` 통과. | 공식 코드 검토와 실제 GitHub App·GitLab 봇 시험, 팀 저장소 활성화 대기. |
 
 ## 검증 경계
 
