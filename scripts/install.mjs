@@ -39,6 +39,8 @@ async function loadRelease() {
   return true;
 }
 
+const [option, ...extra] = process.argv.slice(2);
+if ((option !== undefined && option !== '--upgrade') || extra.length) throw new Error('Usage: node scripts/install.mjs [--upgrade]');
 const lock = '.local/install.lock';
 await mkdir('.local', { recursive: true, mode: 0o700 });
 await mkdir(lock, { mode: 0o700 });
@@ -46,7 +48,7 @@ try {
   await run(process.execPath, ['scripts/setup.mjs']);
   const release = await loadRelease();
   await run('docker', ['compose', 'up', '-d', '--wait', '--wait-timeout', '240', release ? '--no-build' : '--build']);
-  await run(process.execPath, ['scripts/bootstrap-n8n.mjs']);
+  await run(process.execPath, ['scripts/bootstrap-n8n.mjs', ...(option ? [option] : [])]);
   await run('docker', ['compose', 'up', '-d', '--wait', '--wait-timeout', '180', '--no-build']);
   console.log('Heybot is running. Open /admin from the installation host or an SSH tunnel.');
 } finally {
