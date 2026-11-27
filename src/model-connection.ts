@@ -6,7 +6,7 @@ import { AnswerSchema } from './contracts.js';
 import { ClaudeCode } from './claude.js';
 import { ClaudeApi, listClaudeModels, type ClaudeApiCredentials } from './claude-api.js';
 import { Codex } from './codex.js';
-import { ModelFailure } from './model-failure.js';
+import { ModelFailure, type FailureInfo } from './model-failure.js';
 import { Ollama, listOllamaModels, type OllamaEndpoint } from './ollama.js';
 import { ResponsesModel, type ResponsesConnection } from './responses.js';
 import type { Model } from './review.js';
@@ -121,21 +121,28 @@ export function createModel(connection: ModelConnection, dataRoot: string, check
   }
 }
 
+export const publicModelSample = { path: 'sample.ts', source: 'export const defaultPageSize = 17;\n' };
+
+export function validatePublicModelSample(output: unknown, provider: FailureInfo['provider']): void {
+  const answer = AnswerSchema.parse(output);
+  if (answer.answer.trim() !== '17' || answer.unverified !== null ||
+      !answer.evidence.some(item => item.path === publicModelSample.path && item.line === 1 && item.side === 'RIGHT')) {
+    throw new ModelFailure({ code: 'invalid_output', provider });
+  }
+}
+
 export async function checkModelConnection(connection: ModelConnection): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'hey-model-check-'));
   try {
     const workspace = randomUUID();
     const source = join(root, 'jobs', workspace, 'source');
     await mkdir(source, { recursive: true });
-    await writeFile(join(source, 'sample.ts'), 'export const defaultPageSize = 17;\n');
+    await writeFile(join(source, publicModelSample.path), publicModelSample.source);
     const model = createModel(connection, root, true);
-    const answer = AnswerSchema.parse(await model.run('answer',
+    const answer = await model.run('answer',
       'Use the snapshot read tool to read sample.ts. Return the value assigned to defaultPageSize as a number written in the answer string. Cite its declaration line as RIGHT evidence. Set premise and unverified to null.',
-      workspace, 60000));
-    if (answer.answer.trim() !== '17' || answer.unverified !== null ||
-        !answer.evidence.some(item => item.path === 'sample.ts' && item.line === 1 && item.side === 'RIGHT')) {
-      throw new ModelFailure({ code: 'invalid_output', provider: connection.provider });
-    }
+      workspace, 60000);
+    validatePublicModelSample(answer, connection.provider);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

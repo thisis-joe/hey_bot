@@ -6,12 +6,20 @@ import { readBody, send } from './application.js';
 import { equal } from './webhooks.js';
 import { failureInfo, ModelFailure } from './model-failure.js';
 import { currentModelConfiguration } from './model-settings.js';
+import { checkFreeModel } from './openrouter-free.js';
 import { INITIAL_QUESTION_CHECK_HEADER } from './review.js';
 
 const config = readModelConnection(process.env);
 const { provider } = config;
 const option = process.argv[2];
-if (option === '--list-models') {
+if (option === '--check-free-model') {
+  try {
+    console.log(JSON.stringify({ ok: true, ...(await checkFreeModel(process.env)) }));
+  } catch (error) {
+    console.error(JSON.stringify({ ok: false, failure: failureInfo(error, 'openrouter-free') }));
+    process.exitCode = 1;
+  }
+} else if (option === '--list-models') {
   const catalog = readModelCatalog(process.env);
   try {
     if ('field' in catalog) throw new ModelFailure({ code: 'configuration', provider });

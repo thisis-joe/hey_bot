@@ -75,6 +75,12 @@ docker compose build runner &&
 
 `.env`에 `MODEL_PROVIDER=ollama`와 실행기가 접근할 수 있는 내부 `OLLAMA_URL`을 지정한다. `--list-models`는 설치된 로컬 모델과 파일 크기를 바이트로 반환한다. 출력의 정확한 태그를 `OLLAMA_MODEL`에 지정하고 공개 샘플 검사를 실행한다. Ollama 호출에 API 키가 필요하지 않다.
 
+### 무료 클라우드 공개 샘플 검사
+
+OpenRouter 검증 후보에는 `OPENROUTER_FREE_API_KEY`, `OPENROUTER_FREE_MODEL` 및 `OPENROUTER_FREE_PROVIDER`를 제공한다. 모델은 공급자가 배포하는 명시적 `:free` ID, 추론 공급자는 관리자가 승인한 엔드포인트 slug를 지정한다. 소스 체크아웃에서 `npm run build` 후 `node --env-file=.env dist/runner-server.js --check-free-model`로 고정 공개 샘플을 검사한다. 공급자 메타데이터에 0원 가격과 구조화 출력이 명시돼야 하며, 요청에도 해당 공급자와 0원 상한을 적용한다. [OpenRouter 무료 모델](https://openrouter.ai/collections/free-models/) · [엔드포인트 목록](https://openrouter.ai/docs/api/api-reference/endpoints/list-all-endpoints-for-a-model) · [공급자 제한](https://openrouter.ai/docs/guides/routing/provider-selection)
+
+이 검사는 저장소와 모델 실행기의 활성 설정을 바꾸지 않는다. 실제 무료 API로 인증, 가격, 추론 공급자와 출력 형식을 검증한 뒤 체험 경로가 열린다. Groq는 조직의 과금 등급을 요청 직전에 확인할 수 있는 계약을 확보한 뒤 무료 추론을 검증한다. [Groq 결제](https://console.groq.com/docs/billing-faqs) · [Groq API 계약](https://console.groq.com/docs/api-reference)
+
 ### GMS Responses API 직접 호출
 
 Claude CLI 없이 GMS의 OpenAI Responses API를 직접 호출한다. `.env`에 다음 값을 설정한다.

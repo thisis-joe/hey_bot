@@ -37,6 +37,7 @@
 | ACCOUNT-01 | 문서 조사 완료. 기존 Codex CLI와 공식 OAuth의 모델 조회·갱신·해제 및 VM 귀속 경계를 [계정 조사](../verification/heybot-accounts.md)에 기록. | Free·Plus·Pro 및 Enterprise 계정, 팀원 명령, 무인 머지의 실제 검증 대기. |
 | SERVER-01 | 구현 완료. Linux arm64 Docker 격리 환경에서 두 이미지 릴리스 아카이브 로드, 새 설치 및 관리자 초기 화면, 재설치 시 `.env`·DB 데이터·n8n 자격 증명과 수정한 워크플로 보존 확인. 단위 214개, 격리 PostgreSQL 71개, n8n 실행 `97e88960` 통과. | 공식 코드 검토 및 별도 팀 Linux 서버 설치 대기. |
 | SERVER-02 | OpenAI/GMS 관리 화면 구현. 관리자 세션·CSRF·내부 토큰 차단, 모델 목록, 샘플 검사 후 저장, 실패 시 기존 연결 유지, 키 교체·암호화·해제와 해제 직후 추가 호출 차단을 Controller → Runner HTTP fixture로 확인. 단위 215개, 격리 PostgreSQL 71개, Compose 구성 검사 통과. | 공식 코드 검토와 실제 API 키 검증 대기. Claude·Ollama는 SERVER-05, 검증된 무료 연결은 RELEASE-02에서 관리 화면에 붙인다. |
+| MODEL-04 | OpenRouter용 고정 공개 샘플 검사 구현. 명시적 무료 모델, 0원 가격, 지정 추론 공급자, 구조화 출력, 한도 응답을 HTTP fixture로 확인. 가격 변경과 추론 공급자 불일치 시 추론 요청이 차단된다. 단위 216개 통과. | Groq의 조직 과금 등급 사전 확인 수단과 승인된 실제 무료 키·엔드포인트 검증 대기. 저장소 대상 체험과 자동 전환은 아직 연결되지 않았다. |
 
 ## 검증 경계
 

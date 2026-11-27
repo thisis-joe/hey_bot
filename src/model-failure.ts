@@ -4,7 +4,7 @@ import type { Event } from './webhooks.js';
 
 export const FailureSchema = z.strictObject({
   code: z.enum(['rate_limit', 'authentication', 'timeout', 'unavailable', 'invalid_output', 'unconfigured', 'configuration', 'unknown']),
-  provider: z.enum(['claude', 'claude-api', 'codex', 'gms', 'ollama', 'openai']).optional(),
+  provider: z.enum(['claude', 'claude-api', 'codex', 'gms', 'ollama', 'openai', 'openrouter-free']).optional(),
   apiStatus: z.int().min(400).max(599).optional(),
   retryAt: z.iso.datetime().optional(),
 });
@@ -31,7 +31,7 @@ export function scheduleFailure(failure: FailureInfo, now = Date.now()): Failure
   return retryableFailure(failure) ? { ...failure, retryAt: new Date(now + (failure.code === 'rate_limit' ? 15 : 5) * 60000).toISOString() } : failure;
 }
 export function failureMessage(failure: FailureInfo): string {
-  const providers = { gms: 'GMS', claude: 'Claude', 'claude-api': 'Claude API', codex: 'Codex', ollama: 'Ollama', openai: 'OpenAI' };
+  const providers = { gms: 'GMS', claude: 'Claude', 'claude-api': 'Claude API', codex: 'Codex', ollama: 'Ollama', openai: 'OpenAI', 'openrouter-free': 'OpenRouter' };
   const provider = failure.provider ? providers[failure.provider] : '질문 생성 서비스';
   const messages: Record<FailureInfo['code'], string> = {
     rate_limit: `${provider} 사용량 제한${failure.apiStatus ? `(${failure.apiStatus})` : ''}으로 질문 생성을 잠시 멈췄습니다.`,
