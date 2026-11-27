@@ -18,7 +18,7 @@ type ModelConnection = (ResponsesConnection
   | (OllamaEndpoint & { model: string })
 ) & { verifyInitialQuestions: boolean };
 type Provider = ModelConnection['provider'];
-type ConnectionConfig =
+export type ConnectionConfig =
   | { status: 'unconfigured'; provider?: never }
   | { status: 'invalid'; provider?: Provider; field: string }
   | { status: 'configured'; provider: Provider; connection: ModelConnection };
@@ -110,14 +110,14 @@ export function readModelConnection(env: NodeJS.ProcessEnv): ConnectionConfig {
   return configured({ provider, url: url.href, key, model, verifyInitialQuestions: verify ? verify === 'true' : gms && model === 'gpt-6-luna' });
 }
 
-export function createModel(connection: ModelConnection, dataRoot: string, check = false): Model {
+export function createModel(connection: ModelConnection, dataRoot: string, check = false, beforeRequest?: () => Promise<void>): Model {
   switch (connection.provider) {
     case 'codex': return new Codex(dataRoot, connection.home, connection.binary, connection.model, connection.baseUrl);
     case 'claude': return new ClaudeCode(dataRoot, connection.home, connection.binary, connection.model);
     case 'claude-api': return new ClaudeApi(dataRoot, connection, check);
     case 'ollama': return new Ollama(dataRoot, connection, check);
     case 'gms':
-    case 'openai': return new ResponsesModel(dataRoot, connection, check);
+    case 'openai': return new ResponsesModel(dataRoot, connection, check, beforeRequest);
   }
 }
 

@@ -4,7 +4,7 @@ import type { RepositoryConfig } from './config.js';
 import { authenticate, normalize, equal } from './webhooks.js';
 import type { Controller } from './controller.js';
 import { WorkflowStartSchema, WorkflowConflict } from './workflow-contract.js';
-import { adminSetup } from './admin-setup.js';
+import { createAdminSetup } from './admin-setup.js';
 
 export async function readBody(req: IncomingMessage, limit = 2 * 1024 * 1024): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -17,10 +17,11 @@ export function send(res: ServerResponse, status: number, value: unknown): void 
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }); res.end(JSON.stringify(value));
 }
 export function application(controller: Controller, repositories: RepositoryConfig[], env: NodeJS.ProcessEnv = process.env) {
+  const adminSetup = createAdminSetup(env);
   const server = createServer(async (req, res) => {
     try {
       const path = new URL(req.url ?? '/', 'http://internal').pathname;
-      if (req.method === 'GET' && path === '/admin') { await adminSetup(req, res, env); return; }
+      if ((req.method === 'GET' || req.method === 'POST') && path === '/admin') { await adminSetup(req, res); return; }
       if (req.method === 'GET' && path === '/healthz') { await controller.store.pool.query('SELECT 1'); send(res, 200, { ok: true }); return; }
       const webhook = path.match(/^\/webhooks\/(github|gitlab)$/);
       if (req.method === 'POST' && webhook) {

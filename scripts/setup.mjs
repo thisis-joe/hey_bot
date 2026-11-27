@@ -7,7 +7,7 @@ await mkdir('config', { recursive: true });
 let original = ''; try { original = await readFile('.env', 'utf8'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
 let updated = original;
 const env = parseEnv(original), additions = [];
-for (const name of ['POSTGRES_PASSWORD','BOT_DB_PASSWORD','N8N_DB_PASSWORD','INTERNAL_TOKEN','RUNNER_TOKEN','ADMIN_PASSWORD','N8N_ENCRYPTION_KEY','GITHUB_WEBHOOK_SECRET']) if (!env[name]) {
+for (const name of ['POSTGRES_PASSWORD','BOT_DB_PASSWORD','N8N_DB_PASSWORD','INTERNAL_TOKEN','RUNNER_TOKEN','ADMIN_PASSWORD','MODEL_SETTINGS_KEY','N8N_ENCRYPTION_KEY','GITHUB_WEBHOOK_SECRET']) if (!env[name]) {
   const value = randomBytes(32).toString('hex');
   // Replace a blank placeholder, preserve every existing nonempty value and comment.
   const regex = new RegExp(`^${name}=[ \\t]*$`, 'm');

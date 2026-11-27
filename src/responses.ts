@@ -83,7 +83,7 @@ async function snapshotDigest(dirs: string[]): Promise<string> {
   return hash.digest('hex');
 }
 export class ResponsesModel implements Model {
-  constructor(readonly root: string, readonly connection: ResponsesConnection, readonly check = false) {}
+  constructor(readonly root: string, readonly connection: ResponsesConnection, readonly check = false, readonly beforeRequest?: () => Promise<void>) {}
   async run(phase: ModelPhase, prompt: string, id: string, timeoutMs = 600000): Promise<unknown> {
     const { provider, url, key, model } = this.connection;
     const usage = (entry: Record<string, unknown>) => {
@@ -106,6 +106,7 @@ export class ResponsesModel implements Model {
     try {
       for (let round = 0; round < MAX_ROUNDS; round++) {
         signal.throwIfAborted();
+        await this.beforeRequest?.();
         const last = round === MAX_ROUNDS - 1;
         requests++; usage({ event: 'request', run, phase, round: round + 1 });
         const response = await modelApiJson(url, { method: 'POST', signal,
