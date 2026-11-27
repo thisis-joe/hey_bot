@@ -82,7 +82,7 @@ node scripts/verify-n8n.mjs
 
 1. 현재 운영 Compose 설정·이미지·n8n 워크플로를 백업하고 기존 Controller의 작업을 마친다. 웹훅 유입을 잠시 차단하거나 수신 이벤트가 DB에 보존되는지 확인한다.
 2. 기존 n8n 워크플로를 비활성화한 뒤 Controller를 새 이미지로 교체한다. Runner의 모델 계약은 바뀌지 않으므로 기존 설정·인증을 유지한다. DB 시작 마이그레이션은 컬럼을 추가하기만 한다.
-3. 새 워크플로를 같은 `crbDispatch`·`crbRecovery` ID로 가져와 게시하고 n8n을 재시작한다. 기본 체크아웃은 `node scripts/bootstrap-n8n.mjs`를 사용한다. edo1은 `/home/ubuntu/hey/compose.json`과 실제 프로젝트 이름을 사용하므로 해당 운영 절차에 맞게 실행한다.
+3. 새 워크플로를 같은 `crbDispatch`·`crbRecovery` ID로 가져와 게시하고 n8n을 재시작한다. 기본 체크아웃의 명시적 워크플로 업그레이드는 `node scripts/bootstrap-n8n.mjs --upgrade`를 사용한다. edo1은 `/home/ubuntu/hey/compose.json`과 실제 프로젝트 이름을 사용하므로 해당 운영 절차에 맞게 실행한다.
 4. health·내부 인증·워크플로 활성·단계 실행을 확인한 후 웹훅 처리를 재개한다. 기존 이력과 DB·인증 볼륨은 보존한다.
 5. 되돌릴 때는 새 워크플로를 먼저 멈추고 실행 중인 단계를 마친 뒤 이전 Controller 이미지와 이전 n8n 워크플로를 함께 복원한다. 추가된 DB 컬럼을 삭제하지 않는다. 이미 저장된 `jobs.result`와 게시 대기 작업은 이전 코드도 처리할 수 있다. 생성 전에 멈춘 작업은 이전 코드가 준비부터 재실행할 수 있다.
 
