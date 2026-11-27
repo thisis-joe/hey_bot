@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { z } from 'zod';
@@ -13,7 +13,17 @@ const Stored = z.strictObject({
   }).nullable(),
 });
 type Stored = z.infer<typeof Stored>;
-type Selected = (Extract<ConnectionConfig, { status: 'configured' }>['connection']) & { provider: z.infer<typeof ManagedProvider> };
+export type ManagedModelConnection = Extract<Extract<ConnectionConfig, { status: 'configured' }>['connection'], { provider: z.infer<typeof ManagedProvider> }>;
+export const CheckedModel = z.strictObject({
+  provider: ManagedProvider, url: z.url(), model: z.string().min(1).max(200), verifyInitialQuestions: z.boolean(),
+});
+
+export function managedConnection({ provider, url, model, verifyInitialQuestions }: z.infer<typeof CheckedModel>, key: string): ManagedModelConnection {
+  const options = { model, verifyInitialQuestions };
+  if (provider === 'ollama') return { ...options, provider, baseUrl: url };
+  if (provider === 'claude-api') return { ...options, provider, baseUrl: url, key };
+  return { ...options, provider, url, key };
+}
 
 function encryptionKey(env: NodeJS.ProcessEnv): Buffer {
   const raw = env.MODEL_SETTINGS_KEY ?? '';
@@ -23,6 +33,11 @@ function encryptionKey(env: NodeJS.ProcessEnv): Buffer {
 
 export function canManageModels(env: NodeJS.ProcessEnv): boolean {
   return Boolean(env.MODEL_SETTINGS_PATH && /^[\da-f]{64}$/i.test(env.MODEL_SETTINGS_KEY ?? ''));
+}
+
+export function modelSetupAuthorization(env: NodeJS.ProcessEnv): string | undefined {
+  if (!canManageModels(env)) return undefined;
+  return 'Bearer ' + createHmac('sha256', encryptionKey(env)).update('heybot:runner-model-setup').digest('base64url');
 }
 
 async function readStored(env: NodeJS.ProcessEnv): Promise<Stored | undefined> {
@@ -45,17 +60,14 @@ export async function currentModelConfiguration(env: NodeJS.ProcessEnv): Promise
     decipher.setAAD(Buffer.from(JSON.stringify([version, provider, url, model, verifyInitialQuestions])));
     decipher.setAuthTag(Buffer.from(tag, 'base64url'));
     const secret = Buffer.concat([decipher.update(Buffer.from(key, 'base64url')), decipher.final()]).toString('utf8');
-    const common = { model, verifyInitialQuestions };
-    const selected: Selected = provider === 'ollama' ? { ...common, provider, baseUrl: url }
-      : provider === 'claude-api' ? { ...common, provider, baseUrl: url, key: secret }
-      : { ...common, provider, url, key: secret };
-    return { version, config: { status: 'configured', provider, connection: selected } };
+    const settings = { provider, url, model, verifyInitialQuestions };
+    return { version, config: { status: 'configured', provider, connection: managedConnection(settings, secret) } };
   } catch {
     return { config: { status: 'invalid', field: 'MODEL_SETTINGS_PATH' } };
   }
 }
 
-export async function writeModelSettings(env: NodeJS.ProcessEnv, selected: Selected | null): Promise<void> {
+export async function writeModelSettings(env: NodeJS.ProcessEnv, selected: ManagedModelConnection | null): Promise<void> {
   const path = env.MODEL_SETTINGS_PATH;
   if (!path) throw new Error('Model settings location is required');
   const version = randomUUID();

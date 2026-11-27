@@ -7,6 +7,7 @@ import { readBody, send } from './application.js';
 import { equal } from './webhooks.js';
 import { failureInfo, ModelFailure } from './model-failure.js';
 import { currentModelConfiguration } from './model-settings.js';
+import { handleModelSetup } from './model-setup.js';
 import { checkFreeModel } from './openrouter-free.js';
 import { INITIAL_QUESTION_CHECK_HEADER, MODEL_VERSION_HEADER } from './review.js';
 
@@ -30,13 +31,14 @@ if (option === '--check-free-model') {
     console.error(JSON.stringify({ ok: false, failure: failureInfo(error, provider), ...('field' in catalog ? { field: catalog.field } : {}) }));
     process.exitCode = 1;
   }
-} else if (option === '--check-model') {
+} else if (option === '--check-model' || option === '--check-active-model') {
+  const selected = option === '--check-active-model' ? (await currentModelConfiguration(process.env)).config : config;
   try {
-    if (config.status !== 'configured') throw new ModelFailure({ code: config.status === 'invalid' ? 'configuration' : 'unconfigured', provider });
-    await checkModelConnection(config.connection);
-    console.log(JSON.stringify({ ok: true, provider, model: config.connection.model }));
+    if (selected.status !== 'configured') throw new ModelFailure({ code: selected.status === 'invalid' ? 'configuration' : 'unconfigured', provider: selected.provider });
+    await checkModelConnection(selected.connection);
+    console.log(JSON.stringify({ ok: true, provider: selected.provider, model: selected.connection.model }));
   } catch (error) {
-    console.error(JSON.stringify({ ok: false, failure: failureInfo(error, provider), ...(config.status === 'invalid' ? { field: config.field } : {}) }));
+    console.error(JSON.stringify({ ok: false, failure: failureInfo(error, selected.provider), ...(selected.status === 'invalid' ? { field: selected.field } : {}) }));
     process.exitCode = 1;
   }
 } else {
@@ -51,6 +53,9 @@ function startRunner(): void {
   const Input = z.strictObject({ phase: z.enum(Object.keys(phaseSchemas) as (keyof typeof phaseSchemas)[]), prompt: z.string().min(1).max(500000), workspaceId: z.string().uuid(), timeoutMs: z.int().min(1).max(600000) });
   let busy = false;
   const server = createServer(async (req, res) => {
+    if (req.method === 'POST' && req.url === '/model-setup') {
+      await handleModelSetup(req, res, process.env); return;
+    }
     if (req.method === 'GET' && req.url === '/healthz') {
       const { config } = await currentModelConfiguration(process.env);
       send(res, 200, { ok: true, busy, modelStatus: config.status,

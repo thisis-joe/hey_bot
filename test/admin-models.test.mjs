@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -50,11 +52,11 @@ test('administrator tests, replaces and clears the active key through the shared
     res.end(JSON.stringify({ status: 'completed', output }));
   }));
   const storage = { MODEL_SETTINGS_PATH: join(root, 'settings.json'), MODEL_SETTINGS_KEY: 'ba'.repeat(32) };
-  const runner = await startRunner(t, { ...storage, DATA_ROOT: root });
+  const runner = await startRunner(t, { ...storage, DATA_ROOT: root, OPENAI_RESPONSES_URL: gateway + '/v1/responses' });
   const model = new HttpModel(runner.url, runner.token);
   const admin = 'admin-fixture-0000000000000000000000';
   const env = { ...storage, ADMIN_PASSWORD: admin, INTERNAL_TOKEN: 'n8n-fixture-token', RUNNER_TOKEN: runner.token,
-    RUNNER_URL: runner.url, OPENAI_RESPONSES_URL: gateway + '/v1/responses' };
+    RUNNER_URL: runner.url, OPENAI_RESPONSES_URL: 'http://127.0.0.1:1/v1/responses' };
   const url = await local(t, application({}, [], env));
   const auth = `Basic ${Buffer.from(`admin:${admin}`).toString('base64')}`;
   const login = await fetch(url + '/admin', { headers: { authorization: auth } });
@@ -69,6 +71,11 @@ test('administrator tests, replaces and clears the active key through the shared
   });
   const getModel = () => model.run('initial_questions', 'Fixture questions', workspace, 5000);
   await assert.rejects(getModel, error => error.failure?.code === 'unconfigured');
+  for (const token of [runner.token, env.INTERNAL_TOKEN]) {
+    const response = await fetch(runner.url + '/model-setup', { method: 'POST', headers: { authorization: `Bearer ${token}` } });
+    assert.equal(response.status, 401);
+    await response.body.cancel();
+  }
   for (const [values, headers, expected] of [
     [{ intent: 'save' }, { cookie: '', authorization: `Bearer ${runner.token}` }, 401],
     [{ intent: 'save' }, { cookie: '', authorization: `Bearer ${env.INTERNAL_TOKEN}` }, 401],
@@ -106,6 +113,13 @@ test('administrator tests, replaces and clears the active key through the shared
   assert.deepEqual(await getModel(), drafts);
   assert.equal(credentials.at(-1), `Bearer ${rotated}`);
   assert.doesNotMatch(await readFile(storage.MODEL_SETTINGS_PATH, 'utf8'), /rotated-fixture-key/);
+
+  const checkRestored = () => promisify(execFile)(process.execPath, [
+    new URL('../dist/runner-server.js', import.meta.url).pathname, '--check-active-model',
+  ], { env: { PATH: process.env.PATH, ...storage }, timeout: 5000 });
+  const { stdout } = await checkRestored();
+  assert.deepEqual(JSON.parse(stdout), { ok: true, provider: 'openai', model: modelId });
+  assert.equal(credentials.at(-1), `Bearer ${rotated}`);
 
   paused = { arrived: Promise.withResolvers(), release: Promise.withResolvers() };
   const inFlight = assert.rejects(getModel, error => error.failure?.code === 'configuration');
@@ -152,7 +166,7 @@ test('the admin registers Claude and keyless Ollama with their own catalog and e
     }
   }));
   const storage = { MODEL_SETTINGS_PATH: join(root, 'settings.json'), MODEL_SETTINGS_KEY: 'fd'.repeat(32) };
-  const runner = await startRunner(t, { ...storage, DATA_ROOT: root });
+  const runner = await startRunner(t, { ...storage, DATA_ROOT: root, CLAUDE_API_BASE_URL: gateway, OLLAMA_URL: gateway });
   const admin = 'admin-fixture-0000000000000000000000';
   const url = await local(t, application({}, [], { ...storage, ADMIN_PASSWORD: admin, RUNNER_URL: runner.url,
     CLAUDE_API_BASE_URL: gateway, OLLAMA_URL: gateway }));

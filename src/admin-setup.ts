@@ -3,10 +3,9 @@ import { createHmac, randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { equal } from './webhooks.js';
 import { readBody } from './application.js';
-import { checkModelConnection, listConnectionModels, readModelCatalog, readModelConnection } from './model-connection.js';
-import { modelApiJson } from './model-api.js';
+import { ModelSetupInput, requestModelSetup } from './model-setup.js';
 import { failureInfo } from './model-failure.js';
-import { ManagedProvider, canManageModels, currentModelConfiguration, writeModelSettings } from './model-settings.js';
+import { ManagedProvider, canManageModels, currentModelConfiguration, managedConnection, writeModelSettings } from './model-settings.js';
 
 const RunnerHealth = z.object({
   modelStatus: z.enum(['unconfigured', 'invalid', 'configured']),
@@ -25,7 +24,6 @@ const htmlHeaders = {
 };
 const cookieName = 'hey_admin';
 const sessionSeconds = 1800;
-const Catalog = z.object({ data: z.array(z.object({ id: z.string().min(1).max(200) })) });
 const html = (value: string) => value.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!);
 const sign = (password: string, purpose: string, value: string) => createHmac('sha256', password).update(`${purpose}:${value}`).digest('base64url');
 const providerLabels: Record<z.infer<typeof ManagedProvider>, string> = { openai: 'OpenAI', gms: 'GMS', 'claude-api': 'Claude Messages', ollama: 'Ollama' };
@@ -48,7 +46,7 @@ async function runnerStatus(url: string): Promise<{ modelStatus: keyof typeof me
 
 async function page(res: ServerResponse, env: NodeJS.ProcessEnv, csrf: string, code = 200, feedback = '', catalog: string[] = [], current?: { provider: string; model: string }): Promise<void> {
   const { modelStatus, provider: runnerProvider, model: runnerModel } = await runnerStatus(env.RUNNER_URL ?? 'http://runner:8091');
-  const { config } = await currentModelConfiguration(env);
+  const { config, version } = await currentModelConfiguration(env);
   const active = config.status === 'configured' ? config.connection
     : runnerProvider ? { provider: runnerProvider, model: runnerModel ?? '' } : undefined;
   const provider = current?.provider ?? active?.provider;
@@ -58,6 +56,9 @@ async function page(res: ServerResponse, env: NodeJS.ProcessEnv, csrf: string, c
   const claudeUrl = env.CLAUDE_API_BASE_URL || 'https://api.anthropic.com/';
   const ollamaUrl = env.OLLAMA_URL || 'http://127.0.0.1:11434';
   const visibleEndpoint = (value: string) => { try { const url = new URL(value); return url.origin + url.pathname; } catch { return '설정 오류'; } };
+  const activeEndpoint = config.status === 'configured' && version
+    ? 'baseUrl' in config.connection ? config.connection.baseUrl : 'url' in config.connection ? config.connection.url : undefined
+    : undefined;
   const modelForm = canManageModels(env) ? `
 <form method="post" action="/admin">
   <input type="hidden" name="csrf" value="${csrf}">
@@ -93,6 +94,7 @@ async function page(res: ServerResponse, env: NodeJS.ProcessEnv, csrf: string, c
 <h2>모델 연결</h2>
 <p>${messages[modelStatus]}</p>
 ${active ? `<p>현재 모델 <strong>${html(active.provider)} ${html(active.model)}</strong></p>` : ''}
+${activeEndpoint ? `<p>현재 연결 주소 <code>${html(visibleEndpoint(activeEndpoint))}</code></p>` : ''}
 ${feedback ? `<p role="status">${html(feedback)}</p>` : ''}
 ${modelForm}
 </main>
@@ -133,46 +135,30 @@ export function createAdminSetup(env: NodeJS.ProcessEnv) {
       if (intent === 'clear') {
         await writeModelSettings(env, null);
       } else {
-        const provider = ManagedProvider.safeParse(form.get('provider')).data;
-        const key = form.get('key') ?? '', model = (form.get('model') ?? '').trim();
-        if (!provider || (intent !== 'catalog' && intent !== 'save') || (provider !== 'ollama' && !key) || key.length > 1024 || model.length > 200) {
+        const input = ModelSetupInput.safeParse({
+          intent, provider: form.get('provider'), key: form.get('key') ?? '',
+          model: (form.get('model') ?? '').trim(), verify: form.get('verify') ?? '',
+        });
+        if (!input.success) {
           await page(res, env, csrf, 400, '공급자, API 키와 모델 ID를 확인하세요.'); return;
         }
-        const candidateEnv = {
-          ...env, MODEL_PROVIDER: provider, MODEL_VERIFY_INITIAL_QUESTIONS: form.get('verify') ?? '',
-          OPENAI_API_KEY: provider === 'openai' ? key : undefined, OPENAI_MODEL: intent === 'catalog' ? 'catalog' : model,
-          GMS_KEY: provider === 'gms' ? key : undefined, GMS_MODEL: model,
-          ANTHROPIC_API_KEY: provider === 'claude-api' ? key : undefined, CLAUDE_MODEL: model, OLLAMA_MODEL: model,
-        };
-        if (intent === 'catalog' && (provider === 'claude-api' || provider === 'ollama')) {
-          const catalogConnection = readModelCatalog(candidateEnv);
-          if ('field' in catalogConnection) { await page(res, env, csrf, 400, '모델 공급자와 연결 설정을 확인하세요.'); return; }
-          const models = await listConnectionModels(catalogConnection);
+        const { provider, model, key } = input.data;
+        const result = await requestModelSetup(env, input.data);
+        if (result.status === 'models') {
           const feedback = provider === 'ollama' ? '설치된 모델 ID를 선택하세요.' : '모델 목록을 불러왔습니다. ID를 고르고 API 키를 다시 입력하세요.';
-          await page(res, env, csrf, 200, feedback, models.map(entry => entry.id), { provider, model });
+          await page(res, env, csrf, 200, feedback, result.models, { provider, model });
           return;
         }
-        const selected = readModelConnection(candidateEnv);
-        if (selected.status !== 'configured' || selected.connection.provider === 'codex' || selected.connection.provider === 'claude') {
+        if (result.status === 'manual') {
+          await page(res, env, csrf, 400, '이 연결의 모델 ID는 직접 입력하세요.'); return;
+        }
+        if (result.status === 'failed') {
+          await page(res, env, csrf, 422, `모델 연결 작업에 실패했습니다 (${result.failure.code}).`); return;
+        }
+        if (result.status !== 'checked' || intent !== 'save' || result.model.provider !== provider || result.model.model !== model) {
           await page(res, env, csrf, 400, '공급자, API 키와 모델 ID를 확인하세요.'); return;
         }
-        const target = selected.connection;
-        const endpointUrl = new URL('baseUrl' in target ? target.baseUrl : target.url);
-        if (endpointUrl.search) {
-          await page(res, env, csrf, 400, '관리 화면에서는 쿼리 매개변수 없는 대상 주소를 사용하세요.'); return;
-        }
-        if (intent === 'catalog') {
-          if (target.provider !== 'openai' || endpointUrl.pathname !== '/v1/responses') {
-            await page(res, env, csrf, 400, '이 연결의 모델 ID는 직접 입력하세요.'); return;
-          }
-          const models = Catalog.parse(await modelApiJson(new URL('/v1/models', target.url), {
-            headers: { authorization: `Bearer ${target.key}` }, signal: AbortSignal.timeout(10000),
-          }, provider));
-          await page(res, env, csrf, 200, '모델 목록을 불러왔습니다. ID를 고르고 API 키를 다시 입력하세요.', models.data.map(entry => entry.id), { provider, model });
-          return;
-        }
-        await checkModelConnection(target);
-        await writeModelSettings(env, target);
+        await writeModelSettings(env, managedConnection(result.model, key));
       }
       res.writeHead(303, { ...headers, location: '/admin' }).end();
     } catch (error) {
