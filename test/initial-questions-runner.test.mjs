@@ -9,6 +9,7 @@ import { createServer as createHttpServer } from 'node:http';
 import * as contracts from '../dist/contracts.js';
 import { Codex, HttpModel } from '../dist/codex.js';
 import { ClaudeCode } from '../dist/claude.js';
+import { writeModelSettings } from '../dist/model-settings.js';
 import { generateQuestions } from '../dist/review.js';
 import { readPolicy } from '../dist/policy.js';
 import { changeQuestions, checked, snapshot } from './fixtures.mjs';
@@ -125,6 +126,42 @@ test('controller-to-runner HTTP uses the blind gate for Luna and leaves Sol on o
     assert.equal(input.length, 1, 'solver starts without writer history');
     assert.doesNotMatch(input[0].content, /정답은 B입니다|보기 해설/);
   }
+});
+
+test('a model replacement stops follow-up requests in the current generation attempt', { timeout: 15000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'hey-model-replacement-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const id = '88888888-8888-4888-8888-888888888888', sourceDir = join(root, 'jobs', id, 'source');
+  const path = 'src/pay.ts', source = 'function pay() {\n  charge();\n}';
+  const drafts = questions(2), calls = [];
+  await mkdir(join(sourceDir, 'src'), { recursive: true });
+  await writeFile(join(sourceDir, path), source);
+  const env = { DATA_ROOT: root, MODEL_SETTINGS_PATH: join(root, 'connection.json'), MODEL_SETTINGS_KEY: 'ab'.repeat(32) };
+  const gateway = createHttpServer(async (req, res) => {
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    const phase = JSON.parse(raw).text.format.name;
+    calls.push([req.url, phase]);
+    if (req.url === '/original') {
+      await writeModelSettings(env, { provider: 'openai', url: origin + '/replacement', model: 'replacement', key: 'fixture-key', verifyInitialQuestions: false });
+    }
+    const result = phase === 'initial_questions' ? { questions: drafts } : { checks: [1, 2].map(id => ({
+      id, answer: 'B', evidence: { path, line: 2, side: 'RIGHT', reason: '승인 호출' },
+    })) };
+    res.end(JSON.stringify({ status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(result) }] }] }));
+  });
+  await new Promise(resolve => gateway.listen(0, '127.0.0.1', resolve));
+  t.after(() => gateway.close());
+  const origin = `http://127.0.0.1:${gateway.address().port}`;
+  await writeModelSettings(env, { provider: 'gms', url: origin + '/original', model: 'gpt-6-luna', key: 'fixture-key', verifyInitialQuestions: true });
+  const { url, token } = await startRunner(t, env);
+  const model = new HttpModel(url, token);
+  const context = { files: { [path]: source }, diff: { [path]: { oldPath: path, patch: '@@ -2 +2 @@\n+  charge();', lines: new Set([2]) } }, excluded: [], limited: false, sourceDir };
+  const generate = () => generateQuestions(model, id, snapshot(), readPolicy(), context, null, [], [], 'full', 5000);
+  await assert.rejects(generate, error => error.failure?.code === 'configuration');
+  assert.deepEqual(calls, [['/original', 'initial_questions']]);
+  assert.deepEqual((await generate()).questions, drafts);
+  assert.deepEqual(calls.at(-1), ['/replacement', 'initial_questions']);
 });
 
 test('OpenAI connection checks public sample tools and generates questions through the normal runner', { timeout: 15000 }, async t => {

@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { AnswerSchema, InitialQuestionsSchema, InitialQuestionChecksSchema, InitialQuestionRepairsSchema, QuestionBatchSchema, CsInterviewBatchSchema, MoreCsBatchSchema, GradeSchema } from './contracts.js';
 import { execute } from './process.js';
 import { ModelFailure, RunnerFailureSchema } from './model-failure.js';
-import { INITIAL_QUESTION_CHECK_HEADER, type InitialQuestionDraft, type Model, type ModelPhase } from './review.js';
+import { INITIAL_QUESTION_CHECK_HEADER, MODEL_VERSION_HEADER, type InitialQuestionDraft, type Model, type ModelPhase } from './review.js';
 import { redact } from './redact.js';
 
 export const phaseSchemas = {
@@ -25,7 +25,7 @@ export async function workspaceSource(dataRoot: string, id: string): Promise<str
 
 export class Codex implements Model {
   // baseUrl points the built-in OpenAI provider at an OpenAI-compatible proxy; it then authenticates with CODEX_API_KEY.
-  constructor(readonly root: string, readonly home: string, readonly binary = 'codex', readonly model = '', readonly baseUrl = '') {}
+  constructor(readonly root: string, readonly home: string, readonly binary = 'codex', readonly model = '', readonly baseUrl = '', readonly beforeRequest?: () => Promise<void>) {}
   async run(phase: ModelPhase, prompt: string, id: string, timeoutMs = 600000): Promise<unknown> {
     const source = await workspaceSource(this.root, id);
     const dir = await mkdtemp(join(tmpdir(), 'hey-run-'));
@@ -34,6 +34,7 @@ export class Codex implements Model {
     const schemaFile = join(dir, 'schema.json'), output = join(dir, 'answer.json');
     await writeFile(schemaFile, JSON.stringify(z.toJSONSchema(schema, { unrepresentable: 'any' })), { mode: 0o600 });
     try {
+      await this.beforeRequest?.();
       await execute(this.binary, ['exec', '--sandbox', 'read-only', '--ignore-user-config', '--ignore-rules', '--ephemeral', '--skip-git-repo-check', '--json',
         ...['shell_tool', 'multi_agent', 'apps', 'hooks', 'browser_use', 'computer_use', 'view_image', 'image_generation'].flatMap(feature => ['--disable', feature]),
         '-c', 'web_search="disabled"',
@@ -53,22 +54,30 @@ export class Codex implements Model {
   }
 }
 export class HttpModel implements Model {
-  constructor(readonly url: string, readonly token: string) {}
+  constructor(readonly url: string, readonly token: string, private readonly version?: string) {}
   async initialQuestions(prompt: string, workspaceId: string, timeoutMs: number): Promise<InitialQuestionDraft> {
     const response = await this.request('initial_questions', prompt, workspaceId, timeoutMs);
-    return { output: await response.json(), verify: response.headers.get(INITIAL_QUESTION_CHECK_HEADER) === 'blind' };
+    const verify = response.headers.get(INITIAL_QUESTION_CHECK_HEADER) === 'blind';
+    const version = response.headers.get(MODEL_VERSION_HEADER);
+    return { output: await response.json(), verify, ...(verify && version ? { followUp: new HttpModel(this.url, this.token, version) } : {}) };
   }
   async run(phase: ModelPhase, prompt: string, workspaceId: string, timeoutMs = 600000): Promise<unknown> {
     return (await this.request(phase, prompt, workspaceId, timeoutMs)).json();
   }
   private async request(phase: ModelPhase, prompt: string, workspaceId: string, timeoutMs: number): Promise<Response> {
-    const response = await fetch(`${this.url}/run`, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(timeoutMs + 5000), headers: { authorization: `Bearer ${this.token}`, 'content-type': 'application/json' }, body: JSON.stringify({ phase, prompt, workspaceId, timeoutMs }) });
+    const headers = { authorization: `Bearer ${this.token}`, 'content-type': 'application/json',
+      ...(this.version ? { [MODEL_VERSION_HEADER]: this.version } : {}) };
+    const response = await fetch(`${this.url}/run`, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(timeoutMs + 5000), headers, body: JSON.stringify({ phase, prompt, workspaceId, timeoutMs }) });
     if (!response.ok) {
       const text = await response.text();
       let parsed;
       try { parsed = text.length <= 4000 ? RunnerFailureSchema.safeParse(JSON.parse(text)) : undefined; } catch { /* legacy or invalid runner response */ }
       if (parsed?.success) throw new ModelFailure(parsed.data.failure);
       throw new ModelFailure({ code: response.status >= 500 || response.status === 409 ? 'unavailable' : [401, 403].includes(response.status) ? 'authentication' : 'unknown' });
+    }
+    if (this.version && response.headers.get(MODEL_VERSION_HEADER) !== this.version) {
+      await response.body?.cancel();
+      throw new ModelFailure({ code: 'configuration' });
     }
     return response;
   }

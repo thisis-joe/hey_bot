@@ -14,7 +14,7 @@ const system = 'You are a code question and learning assistant. Inspect code onl
 const authEnv = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL'];
 
 export class ClaudeCode implements Model {
-  constructor(readonly root: string, readonly home: string, readonly binary = 'claude', readonly model = '') {}
+  constructor(readonly root: string, readonly home: string, readonly binary = 'claude', readonly model = '', readonly beforeRequest?: () => Promise<void>) {}
   async run(phase: ModelPhase, prompt: string, id: string, timeoutMs = 600000): Promise<unknown> {
     const source = await workspaceSource(this.root, id);
     const dir = await mkdtemp(join(tmpdir(), 'hey-run-'));
@@ -24,6 +24,7 @@ export class ClaudeCode implements Model {
     // The CLI validator rejects the draft 2020-12 meta-schema reference that zod emits.
     const { $schema: _, ...jsonSchema } = z.toJSONSchema(schema, { unrepresentable: 'any' });
     try {
+      await this.beforeRequest?.();
       // No built-in tools, only the snapshot MCP server, and every unlisted tool is denied without prompting.
       const { stdout, code } = await execute(this.binary, ['-p', '--output-format', 'json', '--json-schema', JSON.stringify(jsonSchema),
         '--tools', '', '--strict-mcp-config', '--mcp-config', JSON.stringify(mcp), '--allowedTools', tools.join(','), '--permission-mode', 'dontAsk',

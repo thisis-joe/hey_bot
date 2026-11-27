@@ -112,8 +112,8 @@ export function readModelConnection(env: NodeJS.ProcessEnv): ConnectionConfig {
 
 export function createModel(connection: ModelConnection, dataRoot: string, check = false, beforeRequest?: () => Promise<void>): Model {
   switch (connection.provider) {
-    case 'codex': return new Codex(dataRoot, connection.home, connection.binary, connection.model, connection.baseUrl);
-    case 'claude': return new ClaudeCode(dataRoot, connection.home, connection.binary, connection.model);
+    case 'codex': return new Codex(dataRoot, connection.home, connection.binary, connection.model, connection.baseUrl, beforeRequest);
+    case 'claude': return new ClaudeCode(dataRoot, connection.home, connection.binary, connection.model, beforeRequest);
     case 'claude-api': return new ClaudeApi(dataRoot, connection, check, beforeRequest);
     case 'ollama': return new Ollama(dataRoot, connection, check, beforeRequest);
     case 'gms':

@@ -9,7 +9,8 @@ export interface DiffFile extends DiffMetadata { patch: string; lines: Set<numbe
 export interface ReviewContext { files: Record<string, string>; baseFiles?: Record<string, string>; diff: Record<string, DiffFile>; excluded: string[]; limited: boolean; sourceDir: string; changesSincePrevious?: { fromHeadSha: string; files: Record<string, { oldPath: string; patch: string }> } }
 export type ModelPhase = 'answer' | 'initial_questions' | 'verify_initial_questions' | 'repair_initial_questions' | 'questions' | 'csinterview' | 'morecs' | 'grade';
 export const INITIAL_QUESTION_CHECK_HEADER = 'x-hey-initial-question-check';
-export interface InitialQuestionDraft { output: unknown; verify: boolean }
+export const MODEL_VERSION_HEADER = 'x-hey-model-version';
+export interface InitialQuestionDraft { output: unknown; verify: boolean; followUp?: Model }
 export interface Model {
   run(phase: ModelPhase, prompt: string, workspaceId: string, timeoutMs?: number): Promise<unknown>;
   initialQuestions?(prompt: string, workspaceId: string, timeoutMs: number): Promise<InitialQuestionDraft>;
@@ -226,6 +227,7 @@ export async function generateQuestions(model: Model, workspaceId: string, s: Sn
   let questions: ChangeQuestion[];
   if (!draft.verify) questions = validateQuestions(result.questions, context);
   else {
+    const followUp = draft.followUp ?? model;
     const valid: NumberedQuestion[] = [], rejected: RejectedQuestion[] = [];
     for (const [i, question] of result.questions.entries()) {
       try {
@@ -236,20 +238,20 @@ export async function generateQuestions(model: Model, workspaceId: string, s: Sn
         rejected.push({ id: i + 1, question, reason: error.message });
       }
     }
-    rejected.push(...await rejectedQuestions(model, workspaceId, context, valid, remaining));
+    rejected.push(...await rejectedQuestions(followUp, workspaceId, context, valid, remaining));
     questions = valid.map(q => q.question);
     if (rejected.length) {
       const rejectedIds = new Set(rejected.map(q => q.id));
       const retained = valid.filter(q => !rejectedIds.has(q.id)).map(q => ({ id: q.id, question: q.question.question }));
       const repair = buildQuestionPrompt(s, policy, context, guidelines, issues, previous, { retained, rejected });
-      const { questions: replacements } = InitialQuestionRepairsSchema.parse(await model.run('repair_initial_questions', repair, workspaceId, remaining()));
+      const { questions: replacements } = InitialQuestionRepairsSchema.parse(await followUp.run('repair_initial_questions', repair, workspaceId, remaining()));
       const byId = new Map(replacements.map(({ id, ...question }) => [id, question]));
       if (replacements.length !== rejectedIds.size || byId.size !== rejectedIds.size || rejected.some(q => !byId.has(q.id))) throw invalidQuestionCheck();
       // Validate the merged batch using the original diff coordinates, before normalizing LEFT paths.
       try { questions = validateQuestions(result.questions.map((q, i) => byId.get(i + 1) ?? q), context); }
       catch (error) { if (error instanceof InvalidQuestion) throw invalidQuestionCheck(); throw error; }
       const repaired = questions.flatMap((question, i) => byId.has(i + 1) ? [{ id: i + 1, question }] : []);
-      if ((await rejectedQuestions(model, workspaceId, context, repaired, remaining)).length) throw invalidQuestionCheck();
+      if ((await rejectedQuestions(followUp, workspaceId, context, repaired, remaining)).length) throw invalidQuestionCheck();
     }
   }
   // Keep the model's priority order; difficulty quotas no longer apply.

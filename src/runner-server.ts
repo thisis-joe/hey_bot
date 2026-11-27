@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { phaseSchemas } from './codex.js';
 import { checkModelConnection, createModel, listConnectionModels, readModelCatalog, readModelConnection } from './model-connection.js';
@@ -7,7 +8,7 @@ import { equal } from './webhooks.js';
 import { failureInfo, ModelFailure } from './model-failure.js';
 import { currentModelConfiguration } from './model-settings.js';
 import { checkFreeModel } from './openrouter-free.js';
-import { INITIAL_QUESTION_CHECK_HEADER } from './review.js';
+import { INITIAL_QUESTION_CHECK_HEADER, MODEL_VERSION_HEADER } from './review.js';
 
 const config = readModelConnection(process.env);
 const { provider } = config;
@@ -46,6 +47,7 @@ function startRunner(): void {
   const token = process.env.RUNNER_TOKEN;
   if (!token || token.length < 32) throw new Error('RUNNER_TOKEN must contain at least 32 characters');
   const dataRoot = process.env.DATA_ROOT ?? '/data';
+  const environmentVersion = randomUUID();
   const Input = z.strictObject({ phase: z.enum(Object.keys(phaseSchemas) as (keyof typeof phaseSchemas)[]), prompt: z.string().min(1).max(500000), workspaceId: z.string().uuid(), timeoutMs: z.int().min(1).max(600000) });
   let busy = false;
   const server = createServer(async (req, res) => {
@@ -66,6 +68,11 @@ function startRunner(): void {
       const { version, config } = await currentModelConfiguration(process.env);
       activeProvider = config.provider;
       if (config.status !== 'configured') throw new ModelFailure({ code: config.status === 'invalid' ? 'configuration' : 'unconfigured', provider: activeProvider });
+      const selectedVersion = version ?? environmentVersion;
+      const expectedVersion = req.headers[MODEL_VERSION_HEADER];
+      if (expectedVersion !== undefined && expectedVersion !== selectedVersion) {
+        throw new ModelFailure({ code: 'configuration', provider: activeProvider });
+      }
       const model = createModel(config.connection, dataRoot, false, process.env.MODEL_SETTINGS_PATH ? async () => {
         const next = await currentModelConfiguration(process.env);
         if (next.config.status !== 'configured' || next.version !== version) {
@@ -73,16 +80,16 @@ function startRunner(): void {
         }
       } : undefined);
       const output = await model.run(input.phase, input.prompt, input.workspaceId, input.timeoutMs);
+      res.setHeader(MODEL_VERSION_HEADER, selectedVersion);
       if (input.phase === 'initial_questions' && config.connection.verifyInitialQuestions) {
         res.setHeader(INITIAL_QUESTION_CHECK_HEADER, 'blind');
       }
       send(res, 200, output);
     }
     catch (error) {
-      // Messages are our own; parser errors are classified because theirs can quote model output.
-      const reason = error instanceof z.ZodError ? 'structured output did not match the schema' : error instanceof SyntaxError ? 'invalid JSON output' : error instanceof Error ? error.message : 'unknown';
-      console.error(JSON.stringify({ service: 'runner', provider: activeProvider, error: reason.slice(0, 200) }));
-      send(res, 422, { error: 'model_failure', failure: failureInfo(error, activeProvider) });
+      const failure = failureInfo(error, activeProvider);
+      console.error(JSON.stringify({ service: 'runner', failure }));
+      send(res, 422, { error: 'model_failure', failure });
     }
     finally { busy = false; }
   });
