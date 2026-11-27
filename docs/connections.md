@@ -5,7 +5,7 @@
 
 ## 1. 질문 생성 엔진 선택과 로그인
 
-`.env`의 `MODEL_PROVIDER`에 `gms`, `openai`, `claude-api`, `codex`, `claude` 중 하나를 지정한다. 공급자를 비워 두면 `GMS_KEY`가 있는 설치는 기존 GMS 경로를 사용한다.
+`.env`의 `MODEL_PROVIDER`에 `gms`, `openai`, `claude-api`, `ollama`, `codex`, `claude` 중 하나를 지정한다. 공급자를 비워 두면 `GMS_KEY`가 있는 설치는 기존 GMS 경로를 사용한다.
 새 설치는 모델 미설정 상태로 시작한다. 실행기 로그와 `/healthz`의 `modelStatus`에서 미설정(`unconfigured`), 설정 오류(`invalid`), 구성 로드 완료(`configured`)를 구분한다.
 값을 바꾼 뒤 `docker compose up -d --force-recreate runner`로 다시 읽는다. 실행기 로그의 `provider`로 적용 여부를 확인한다.
 
@@ -59,7 +59,7 @@ docker compose build runner &&
 
 `.env`에 `MODEL_PROVIDER=openai`, `OPENAI_API_KEY`, `OPENAI_MODEL`을 지정한다. 모델 ID는 API 키에 허용된 것을 입력한다. Responses 호환 게이트웨이의 경우 `OPENAI_RESPONSES_URL`에 `/v1/responses`를 포함한 전체 HTTPS 주소를 지정하고 그 게이트웨이가 발급한 키를 쓴다.
 
-OpenAI, GMS, Claude Messages는 실행기를 재시작하기 전에 아래 명령으로 새 설정을 시험할 수 있다. 일회용 컨테이너가 고정 공개 샘플의 파일 읽기와 구조화 응답을 확인한다. 이 명령은 실제 모델 요청을 보내므로 제공자의 과금 정책이 적용된다.
+직접 API 또는 Ollama에 연결할 때 실행기를 재시작하기 전에 아래 명령으로 새 설정을 시험한다. 일회용 컨테이너가 고정 공개 샘플의 파일 읽기와 구조화 응답을 확인한다. 클라우드 API를 선택하면 이 명령에도 제공자의 과금 정책이 적용된다.
 
 ```sh
 docker compose build runner &&
@@ -68,6 +68,12 @@ docker compose build runner &&
 ```
 
 샘플 검사가 성공한 뒤 마지막 명령으로 적용한다. 직접 실행할 때는 Node.js의 `--env-file` 또는 환경 변수와 함께 `node dist/runner-server.js --check-model`을 쓴다. 최초 질문의 독립 풀이를 켜거나 끄려면 `MODEL_VERIFY_INITIAL_QUESTIONS=true` 또는 `false`를 지정한다. GMS의 `gpt-6-luna` 기본값은 `true`다.
+
+### 팀 내부 Ollama
+
+팀이 운영하는 Ollama에서 모델을 준비하고 외부 통신을 차단한 상태로 실행한다. Ollama는 `OLLAMA_NO_CLOUD=1`로 로컬 전용 모드를 설정할 수 있다. `qwen3:4b`는 다운로드 약 2.5 GB인 평가 후보다. [Ollama 로컬 전용 설정](https://docs.ollama.com/faq#how-do-i-disable-ollamas-cloud-features) · [Qwen3 4B](https://ollama.com/library/qwen3:4b)
+
+`.env`에 `MODEL_PROVIDER=ollama`와 실행기가 접근할 수 있는 내부 `OLLAMA_URL`을 지정한다. `--list-models`는 설치된 로컬 모델과 파일 크기를 바이트로 반환한다. 출력의 정확한 태그를 `OLLAMA_MODEL`에 지정하고 공개 샘플 검사를 실행한다. Ollama 호출에 API 키가 필요하지 않다.
 
 ### GMS Responses API 직접 호출
 

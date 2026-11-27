@@ -3,10 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { execFile, spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { once } from 'node:events';
-import { createServer } from 'node:net';
 import { createServer as createHttpServer } from 'node:http';
 import * as contracts from '../dist/contracts.js';
 import { Codex, HttpModel } from '../dist/codex.js';
@@ -14,6 +12,7 @@ import { ClaudeCode } from '../dist/claude.js';
 import { generateQuestions } from '../dist/review.js';
 import { readPolicy } from '../dist/policy.js';
 import { changeQuestions, checked, snapshot } from './fixtures.mjs';
+import { startRunner } from './model-runner-fixture.mjs';
 
 const questions = count => Array.from({ length: count }, (_, i) => ({
   ...changeQuestions()[i % 3], question: `변경된 처리 조건 ${i + 1}은 무엇인가요?`,
@@ -88,35 +87,6 @@ fs.writeFileSync(args[args.indexOf('-o') + 1], ${JSON.stringify(JSON.stringify(v
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), value);
 });
-
-async function startRunner(t, env) {
-  const listener = createServer();
-  listener.listen(0, '127.0.0.1');
-  await once(listener, 'listening');
-  const { port } = listener.address();
-  await new Promise((resolve, reject) => listener.close(error => error ? reject(error) : resolve()));
-  const token = 'initial-questions-runner-test-token';
-  const child = spawn(process.execPath, [new URL('../dist/runner-server.js', import.meta.url).pathname], {
-    env: { PATH: process.env.PATH, PORT: String(port), RUNNER_TOKEN: token, ...env },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  t.after(async () => {
-    if (child.exitCode === null && child.signalCode === null) {
-      const closed = once(child, 'close'); child.kill('SIGKILL'); await closed;
-    }
-  });
-  await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('Runner did not become ready')), 5000);
-    let output = '';
-    child.stdout.on('data', chunk => {
-      output += chunk.toString();
-      if (output.includes('"ready":true')) { clearTimeout(timer); resolve(); }
-    });
-    child.once('error', error => { clearTimeout(timer); reject(error); });
-    child.once('exit', code => { clearTimeout(timer); reject(new Error(`Runner exited before readiness (${code})`)); });
-  });
-  return { url: `http://127.0.0.1:${port}`, token };
-}
 
 test('controller-to-runner HTTP uses the blind gate for Luna and leaves Sol on one stage', { timeout: 15000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'crb-blind-http-'));

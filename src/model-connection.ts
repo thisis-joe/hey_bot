@@ -7,6 +7,7 @@ import { ClaudeCode } from './claude.js';
 import { ClaudeApi, listClaudeModels, type ClaudeApiCredentials } from './claude-api.js';
 import { Codex } from './codex.js';
 import { ModelFailure } from './model-failure.js';
+import { Ollama, listOllamaModels, type OllamaEndpoint } from './ollama.js';
 import { ResponsesModel, type ResponsesConnection } from './responses.js';
 import type { Model } from './review.js';
 
@@ -14,6 +15,7 @@ type ModelConnection = (ResponsesConnection
   | { provider: 'codex'; home: string; binary: string; model: string; baseUrl: string }
   | { provider: 'claude'; home: string; binary: string; model: string }
   | (ClaudeApiCredentials & { model: string })
+  | (OllamaEndpoint & { model: string })
 ) & { verifyInitialQuestions: boolean };
 type Provider = ModelConnection['provider'];
 type ConnectionConfig =
@@ -46,19 +48,29 @@ function readClaudeApiCredentials(env: NodeJS.ProcessEnv): ClaudeApiCredentials 
   return { provider: 'claude-api', baseUrl: url.href, key };
 }
 
-export function readModelCatalog(env: NodeJS.ProcessEnv) {
-  if (env.MODEL_PROVIDER !== 'claude-api') return { field: 'MODEL_PROVIDER' };
-  return readClaudeApiCredentials(env);
+function readOllamaEndpoint(env: NodeJS.ProcessEnv): OllamaEndpoint | { field: string } {
+  const url = httpEndpoint(env.OLLAMA_URL || 'http://127.0.0.1:11434', true);
+  if (!url || url.search || /(^|\.)ollama\.com\.?$/i.test(url.hostname)) return { field: 'OLLAMA_URL' };
+  if (!url.pathname.endsWith('/')) url.pathname += '/';
+  return { provider: 'ollama', baseUrl: url.href };
 }
 
-export async function listConnectionModels(connection: ClaudeApiCredentials) {
-  return listClaudeModels(connection);
+export function readModelCatalog(env: NodeJS.ProcessEnv) {
+  switch (env.MODEL_PROVIDER) {
+    case 'claude-api': return readClaudeApiCredentials(env);
+    case 'ollama': return readOllamaEndpoint(env);
+    default: return { field: 'MODEL_PROVIDER' };
+  }
+}
+
+export async function listConnectionModels(connection: ClaudeApiCredentials | OllamaEndpoint) {
+  return connection.provider === 'ollama' ? listOllamaModels(connection) : listClaudeModels(connection);
 }
 
 export function readModelConnection(env: NodeJS.ProcessEnv): ConnectionConfig {
   const provider = env.MODEL_PROVIDER || (env.GMS_KEY ? 'gms' : undefined);
   if (!provider) return { status: 'unconfigured' };
-  if (provider !== 'gms' && provider !== 'openai' && provider !== 'codex' && provider !== 'claude' && provider !== 'claude-api') {
+  if (provider !== 'gms' && provider !== 'openai' && provider !== 'codex' && provider !== 'claude' && provider !== 'claude-api' && provider !== 'ollama') {
     return { status: 'invalid', field: 'MODEL_PROVIDER' };
   }
   const configured = (connection: ModelConnection): ConnectionConfig => ({ status: 'configured', provider, connection });
@@ -79,6 +91,12 @@ export function readModelConnection(env: NodeJS.ProcessEnv): ConnectionConfig {
     if (!model?.trim()) return invalid('CLAUDE_MODEL');
     return configured({ ...credentials, model, verifyInitialQuestions: verify === 'true' });
   }
+  if (provider === 'ollama') {
+    const endpoint = readOllamaEndpoint(env), model = env.OLLAMA_MODEL;
+    if ('field' in endpoint) return invalid(endpoint.field);
+    if (!model?.trim()) return invalid('OLLAMA_MODEL');
+    return configured({ ...endpoint, model, verifyInitialQuestions: verify === 'true' });
+  }
   const gms = provider === 'gms';
   const key = gms ? env.GMS_KEY : env.OPENAI_API_KEY;
   const model = gms ? env.GMS_MODEL ?? 'gpt-6-luna' : env.OPENAI_MODEL;
@@ -97,6 +115,7 @@ export function createModel(connection: ModelConnection, dataRoot: string, check
     case 'codex': return new Codex(dataRoot, connection.home, connection.binary, connection.model, connection.baseUrl);
     case 'claude': return new ClaudeCode(dataRoot, connection.home, connection.binary, connection.model);
     case 'claude-api': return new ClaudeApi(dataRoot, connection, check);
+    case 'ollama': return new Ollama(dataRoot, connection, check);
     case 'gms':
     case 'openai': return new ResponsesModel(dataRoot, connection, check);
   }
